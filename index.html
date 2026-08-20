@@ -1,0 +1,1638 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Kris at the Piano</title>
+<style>
+  html,body { margin:0; padding:0; background:#000; height:100%; overflow:hidden;
+              display:flex; align-items:center; justify-content:center; }
+  canvas { image-rendering: pixelated; image-rendering: crisp-edges;
+           width:min(100vw, calc(100vh * 16 / 9)); height:auto; background:#000; }
+</style>
+</head>
+<body>
+<script src="assets/performances.js"></script>
+<canvas id="game" width="854" height="480" role="img" aria-label="Kris at the piano in Noelle's house, a playable pixel-art scene"></canvas>
+<script>
+"use strict";
+/* ============================================================
+   DELTARUNE - KRIS AT THE PIANO (playable prototype)
+
+   Room:   room_lw_noellehouse_kitchen (chapter 4) - the Holiday
+           dining room, rebuilt from bg_noellehouse_kitchen plus the
+           separate tree / piano / bench / chair sprites the room
+           layers on top of it.
+   Piano:  obj_ch4_DCA09_piano (chapter 4). Its Create/Step events
+           drive spr_kris_piano_full (525 frames) straight off the
+           playback position of the song, which is the sync used here.
+   Songs:  every mus/kris_piano_*.ogg track in the decompile.
+   Engine: movement, dialogue box and bitmap font ported from the
+           Egg Room prototype (obj_mainchara/Step_0.gml port).
+   ============================================================ */
+
+const W = 640, H = 360;              // internal view, in room pixels * ROOM_SCALE
+const RENDER_SCALE = 4 / 3;          // 640x360 -> 854x480 canvas
+const ROOM_SCALE = 2;                // the room art is drawn at 2x, as in the reference
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+ctx.imageSmoothingEnabled = false;
+
+/* ---------------- room geometry (all values in ROOM pixels) ----------------
+   bg_noellehouse_kitchen is 640x240. Its opaque area is x 40..607, y 8..199,
+   with the exit corridor at x 80..119 continuing down to y 239.            */
+const ROOM_W = 640, ROOM_H = 240;
+const WORLD_W = ROOM_W * ROOM_SCALE, WORLD_H = ROOM_H * ROOM_SCALE;
+
+const FLOOR_TOP = 82;                // baseboard line sits at y 79
+const FLOOR_BOT = 198;
+const FLOOR_L = 46, FLOOR_R = 602;
+const HALL = { x0: 84, x1: 116, y1: 236 };   // the corridor out of the room
+
+// props layered over the background (position = top-left, in room pixels)
+const TREE  = { x: 478, y: 4 };      // spr_noellehouse_kitchen_tree   90x134
+const PIANO = { x: 508, y: 74 };     // spr_noellehouse_kitchen_piano  89x95
+const BENCH = { x: 528, y: 157 };    // spr_noellehouse_kitchen_piano_seat 46x19
+const KEYS  = { x: PIANO.x + 8, y: PIANO.y + 67, w: 72, h: 6 };  // keyboard band
+const DOOR  = { x: 567, y: 25, w: 33, h: 54 };
+
+// where Kris sits: spr_kris_piano_full is 52x52 with the head at y16..32,
+// the hands at y33..40 and the seat at y40..46, so the hands land on the keys.
+const SEAT = { x: 525, y: 110 };
+// where Kris stands to reach the piano
+const PIANO_SPOT = { x: 551, y: 186 };
+
+// solid rectangles, tested against Kris's feet
+const SOLIDS = [
+  { x:  58, y:  40, w: 150, h:  59, name: "counter" },   // fridge / stove / microwave run
+  { x: 238, y:  40, w:  30, h: 134, name: "counter" },   // the counter's tall arm
+  { x: 140, y: 136, w: 128, h:  38, name: "counter" },   // the counter's low arm
+  { x:  38, y: 130, w:  44, h:  38, name: "counter" },   // small counter, far left
+  { x: 300, y:  90, w: 148, h:  88, name: "table" },     // dining table + its chairs
+  { x: 486, y: 104, w:  76, h:  36, name: "tree" },      // the tree's stand
+  { x: 508, y: 100, w:  90, h:  74, name: "piano" }      // piano body + bench
+];
+
+const CAMERA = { x: 0, y: 0, tx: 0, ty: 0, zoom: 1 };
+
+/* ---------------- UI metrics ---------------- */
+const UI_SCALE = 2;
+const UW = W / UI_SCALE, UH = H / UI_SCALE;   // 320 x 180
+// This is the original Deltarune dark-world dialog footprint. The 0.75 scale
+// offsets this project's 4/3 final canvas enlargement, producing 592x166px.
+const DARKBOX = { x0: 24, y0: H - 168, x1: W - 24, y1: H - 2 };
+const DARKBOX_SCALE = 0.75;
+// Original Chapter 5 dark-world textbox tiles, carried over from EggRoom.
+const DARKBOX_ASSETS = {
+  top: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAQCAYAAADXnxW3AAAAI0lEQVQI12NwcPjPwMTAwIBEMPz///8/hDtv8VGICJoSnAQA5xoIm0HpxWAAAAAASUVORK5CYII=",
+  left: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAABCAYAAADXeS5fAAAAIUlEQVQI12N0cPjPgAz272f4z8DAwDBv8VGG5DgbBkIAAENIBwFpkGobAAAAAElFTkSuQmCC",
+  heart: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAkAAAAJCAYAAADgkQYQAAAAQklEQVQY052OQQ7AMAjD7P3/z+llRROjOywXRDBRBAgEQPDeawia8krSvIu3+tMI8QvaRfMB6KNIJqCSJtB24wRuLcbxEAeaqec6AAAAAElFTkSuQmCC",
+  corner: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAtElEQVQ4y6WSSw6EIBBEqydzK13QB8EFnksXehA3eK6azWCwFSSxEqKg/aj+iHNETdsGqkJK3z9okA87XwFqkG/Jdr4PvsO87mgGqEISJA+04EsK+Q+qEFVI8F01tYuDVPW76t+m4RyPxb/ys2mJBED7TEtI0t6SbNsbg+8gch4JcY5Hi2y1x6EHAExLPN6tJE1ibVhKwSeA7cS87hiHHiQvtotttJqWWA1+BNSsNwFa9BrwA8KwaRp1iDVNAAAAAElFTkSuQmCC"
+};
+
+// obj_dialoguer/Draw_0.gml: white sprite, then black inset by 3
+function drBox(x, y, w, h) {
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(x, y, w, h);
+  ctx.fillStyle = "#000000";
+  ctx.fillRect(x + 3, y + 3, w - 6, h - 6);
+}
+function drawHeart(x, y) {
+  if (img.heart) ctx.drawImage(img.heart, Math.round(x), Math.round(y));
+}
+
+/* ---------------- assets ---------------- */
+const ASSETS = {
+  roomBg:   "assets/room_bg.png",
+  piano:    "assets/piano.png",
+  keys:     "assets/piano_keys.png",
+  bench:    "assets/piano_seat.png",
+  tree:     "assets/tree.png",
+  door:     "assets/door_closed.png",
+  pianoFull:   "assets/piano_full.png",     // spr_kris_piano_full, as decompiled
+  pianoFullLw: "assets/piano_full_lw.png",  // ...recoloured to Kris's light-world palette
+  puppetBody:   "assets/puppet_body.png",   // spr_kris_pianopuppet_body  (1 frame)
+  puppetBodyLw: "assets/puppet_body_lw.png",
+  puppetLarm:   "assets/puppet_larm.png",   // spr_kris_pianopuppet_larm  (12 frames)
+  puppetLarmLw: "assets/puppet_larm_lw.png",
+  puppetRarm:   "assets/puppet_rarm.png",   // spr_kris_pianopuppet_rarm  (12 frames)
+  puppetRarmLw: "assets/puppet_rarm_lw.png",
+  note:     "assets/sfx/krispiano.wav",     // snd_krispiano, one note, pitched per key
+  font:     "assets/fnt_main.png",
+  heart:    "assets/heart.png",           // spr_heartsmall, the menu SOUL
+  logo:     "assets/logo.png",
+  roomMus:  "assets/mus/room_noelle_house.ogg",
+  blip:     "assets/sfx/blip.wav",
+  cursor:   "assets/sfx/cursor.wav",
+  doorOpen: "assets/sfx/dooropen.wav",
+  doorClose:"assets/sfx/doorclose.wav"
+};
+
+const PIANO_SHEET = { cell: 52, cols: 25, frames: 525 };
+
+// mus/kris_piano_*.ogg - every piano track in the decompile.
+// dur/env come from the ogg itself (env = 10Hz loudness, see ENV below).
+const SONGS = [
+  { id: "kris_piano_lower",         name: "LOWER",           file: "assets/mus/kris_piano_lower.ogg" },
+  { id: "kris_piano_prophecy",      name: "PROPHECY",        file: "assets/mus/kris_piano_prophecy.ogg" },
+  { id: "kris_piano_last_prophecy", name: "LAST PROPHECY",   file: "assets/mus/kris_piano_last_prophecy.ogg" },
+  { id: "kris_piano_lancer_waltz",  name: "LANCER'S WALTZ",  file: "assets/mus/kris_piano_lancer_waltz.ogg" },
+  { id: "kris_piano_rouxls",        name: "ROUXLS KAARD",    file: "assets/mus/kris_piano_rouxls.ogg" },
+  { id: "kris_piano_shop",          name: "SHOP",            file: "assets/mus/kris_piano_shop.ogg" },
+  { id: "kris_piano_waitingroom",   name: "WAITING ROOM",    file: "assets/mus/kris_piano_waitingroom.ogg" },
+  { id: "kris_piano_sevenfour",     name: "SEVEN / FOUR",    file: "assets/mus/kris_piano_sevenfour.ogg" },
+  { id: "kris_piano_quiz",          name: "QUIZ",            file: "assets/mus/kris_piano_quiz.ogg" }
+];
+
+// obj_ch4_DCA09_piano plays kris_piano_lower and steps spr_kris_piano_full
+// across the whole track, so that one song keeps the game's exact sync.
+const SYNCED_SONG = "kris_piano_lower";
+
+// LOWER is never puppeted. spr_kris_piano_full was drawn for that track and
+// nothing else, and obj_ch4_DCA09_piano reads it straight off the playhead, so
+// it always plays as the game plays it. The setting only governs the other
+// eight, which have no animation of their own.
+const ANIM_MODES = [
+  { id: "puppet", name: "Puppet",  hint: "The other eight use the puppet rig." },
+  { id: "baked",  name: "Baked",   hint: "The other eight stretch the baked sheet." }
+];
+function isSyncedSong(idx) { return SONGS[idx === undefined ? state.songIdx : idx].id === SYNCED_SONG; }
+function usePuppet() {
+  if (state.freePlay) return true;
+  if (isSyncedSong()) return false;                       // LOWER keeps its own sprite
+  return ANIM_MODES[settings.animMode].id === "puppet";
+}
+
+const ENV_CHARS = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ!#$%&()*+-.:;<=>?@[]^_{|}~";
+function envAt(song, t) {              // loudness 0..1 at time t, 10 samples/sec
+  const e = ENV[song.id];
+  if (!e) return 0.5;
+  const s = e.env;
+  const i = Math.max(0, Math.min(s.length - 1, Math.floor(t * 10)));
+  return ENV_CHARS.indexOf(s[i]) / (ENV_CHARS.length - 1);
+}
+
+/* ---------------- settings ---------------- */
+const PALETTES = [
+  { name: "Light world",   suffix: "Lw" },   // recoloured to match spr_krisd
+  { name: "As decompiled", suffix: "" }      // the sprites' own dark-world colours
+];
+// palette-aware sprite lookup: pal("puppetBody") -> img.puppetBodyLw or img.puppetBody
+function pal(base) { return img[base + PALETTES[settings.palette].suffix]; }
+
+/* ---------------- obj_kris_pianopuppet ----------------
+   The rig Toby left in chapter 4: one body sprite plus a 12-frame arm sprite
+   per side, indexed `basexindex + (keydown * 6)` - six hand positions along
+   the keyboard, each with a raised and a key-down pose. It belongs to no room;
+   it is the tool the performances were authored with, and it records what you
+   play as one character per frame:
+
+       1 2 3 L U R  ->  position 5 4 3 2 1 0     (5 = arm furthest out)
+       W            ->  nothing held; the arm lifts but stays where it was
+
+   assets/performances.js holds one such string per hand per song, generated
+   from the audio by tools/make_performances.py. A performance you record in
+   here is the same kind of string and simply replaces it.                    */
+const PUPPET = { x: 537, y: 131 };   // hands land on the keyboard band
+const PUPPET_CELL = { w: 34, h: 34, bodyW: 30, armDX: -2 };
+const POS_CHAR = { "1": 5, "2": 4, "3": 3, "L": 2, "U": 1, "R": 0 };
+const CHAR_POS = ["R", "U", "L", "3", "2", "1"];        // position 0..5 -> char
+// left hand keys Z X C V B N and right hand keys P O I U Y T, in the order the
+// tool reads them: each row runs from position 5 (furthest out) inwards.
+const LEFT_KEYS  = ["z", "x", "c", "v", "b", "n"];
+const RIGHT_KEYS = ["p", "o", "i", "u", "y", "t"];
+// snd_krispiano is a single note at about MIDI 59.3; every key is that sample
+// repitched, low hexachord under the left hand and high under the right.
+const NOTE_BASE_MIDI = 59.26;
+// indexed by hand position, so position 5 (furthest out) is the outer note
+const LEFT_POS_MIDI  = [57, 55, 53, 52, 50, 48];   // pos 0 nearest centre -> pos 5 lowest
+const RIGHT_POS_MIDI = [60, 62, 64, 65, 67, 69];   // pos 0 nearest centre -> pos 5 highest
+const WALK_MODES = [
+  { name: "Deltarune",     hint: "obj_mainchara port: run + facing latch" },
+  { name: "Classic 8-way", hint: "8-way smooth walk (prototype)" }
+];
+const settings = {
+  walkSpeed: 1.5,   // Deltarune runs at 30fps, wspeed 3 -> 1.5/frame at 60fps
+  walkMode: 0,
+  palette: 0,
+  animMode: 0,
+  autoLoop: false   // keep the chosen song looping instead of standing up
+};
+const SETTINGS_KEY = "krispiano.settings.v1";
+
+function loadSettings() {
+  try {
+    const s = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}");
+    if (Number.isFinite(s.walkSpeed)) settings.walkSpeed = Math.max(0.5, Math.min(4, +s.walkSpeed.toFixed(1)));
+    if (Number.isInteger(s.walkMode)) settings.walkMode = Math.max(0, Math.min(WALK_MODES.length - 1, s.walkMode));
+    if (Number.isInteger(s.palette)) settings.palette = Math.max(0, Math.min(PALETTES.length - 1, s.palette));
+    if (Number.isInteger(s.animMode)) settings.animMode = Math.max(0, Math.min(ANIM_MODES.length - 1, s.animMode));
+    if (typeof s.autoLoop === "boolean") settings.autoLoop = s.autoLoop;
+  } catch (_) { /* storage may be unavailable; the defaults are fine */ }
+}
+function saveSettings() {
+  try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch (_) {}
+}
+function updateSetting(change) { change(); saveSettings(); }
+
+/* ---------------- runtime ---------------- */
+const img = {};
+const krisWalk = { d: [], u: [], l: [], r: [] };
+const glyphs = {};
+let roomMusEl, blipEl, cursorEl, doorOpenEl, doorCloseEl, noteEl;
+let songEl = null;                 // the piano track currently playing
+
+// live puppet pose, mirroring the tool's baselindex / baserindex / keydown
+const PUP = { l: 0, r: 0, lDown: false, rDown: false };
+// W-key recorder, same three states the tool cycles through
+const REC = { mode: 0, l: "", r: "", frame: 0 };   // 0 off, 1 recording, 2 saved
+const recordings = {};             // songId -> {l, r, fps, frames}, yours, beats the generated one
+
+const KRIS = { x: 551, y: 186, dir: "u", moving: false, anim: 0, animT: 0 };
+
+const state = {
+  started: false,
+  menu: "title",       // "title" | "settings"
+  menuSel: 0,
+  seated: false,       // Kris is on the bench
+  playing: false,      // a track is sounding
+  freePlay: false,     // Kris is being played by hand rather than a performance
+  songIdx: 0,
+  pickerOpen: false,
+  pickerSel: 0,
+  frame: 0,            // spr_kris_piano_full image_index
+  played: {},          // songs heard at least once
+  fade: 0,
+  keyGlow: []          // {x,w,t} recently struck keys
+};
+
+// Loudness envelopes, 10 samples/sec, measured from each ogg. They only set
+// how fast Kris's hands move on the tracks the game never animated.
+const ENV = {
+  "kris_piano_lancer_waltz": { dur: 80.398, env: "ARwANxVVhrOjl>&QQWKE>$PLRDnTGmXu7RNdfSJuIVJGzz:WYLxtPif(RAFXJG#TQ~XGOItQ;Mt;(Go$PEPyoIKAtXQAkTCuMCy&+PEPDuLJHWDtvG$#PBCPVJPIAHMpmmPTlmT[QjIxjOMeHWe5WTG%FwMWGyRzfXHsMOBAXEzADCIQBx.TtNzkS)HALHBVVPDVNAOPwMYIEzGtvuTUGP.ZP(PQMLxoqxrCIxi%MzSMJ*UOD%AuEBxGzAvJDyFExFGtC:PAUXMLPIIUvrIBzHRBPZpoFxACAqJJwxyDEBtw?PJLRGD%PHYQHQSzFVAH:GAzsYPztF(xpqt<Ltpn*IlrDlgWIBPBsEUFAUPxoWAmsCJOOIL&RFPIC:!JC?!IR(AwXgk^YM#SD;HpLWAyCuKSvtAWCv*RD)AmoQxwFtk&PvLKAA&HjWIF&WQUEPyH#GuKGA&GtRIroLJK$yePWDsNBuDEAtLut=ZHTAwAFEVLzxDNGBIztR$NUUDGAAG[GtGQIJLGINurZPGYXHtWHpFQIP?TgMIyGHwVCst$&PGHzC.Gv&-PJLMV&FvWWBCAwvuDuoGIllqmthgiwleCyfiOziDvktVjhmnmAffaVDsCItvujB;CgnutmHhiNMxpRTBnIokFsjhigCFmpXEtPUAryAzKHAFKDBPrmQHAIIxC(xq($QDAIR.RFZRqqRxp.QGYPEtHOJFstxVMtjqtokhjjheRLyogeUHn953100000000000000000000000000000000000000000000000000000000000" },
+  "kris_piano_last_prophecy": { dur: 58.139, env: "0ote8dwl9cPqlmqm9bpea9lr9bLjhgke77SxmmK(RylmqptHooqTkneAtbjMtgltpgjAyrkzm8c>TDmikmpMAlixgbf*uicviln!JmeUBpmBdehWvciWuetLAkeVLrtGCrgCxkank89RtokqtghnpfaaAoafwi98od6a9HBqivf9frc87fb69Koge8xrcBwjjzAqeBtlhwtefIrlmuqmkBkeeDeakPsooGogeAKtnmtkcdGrjmgmFmillQtopnzokfdPGopwvkbhgeb9abbXIneEvmg>&mkttmmurlhuuheacecBsgcVqtrKsiy~uafBjesBpihAujnndbopjhFOFtxzrmBtjhMtqA!IzECumAtlgEmeghYIvqDCtt@BotMupsrgcIIvsOGtoAysqHDvBxnl%PpjztlmEtplytgecgfrVui:WDvqjcDyooAxrkoLyqpPxnzsefmljz$zlktlkRIAtxsrm(SCyEsgpzfeuoedQRAomtomAGpks-yghFYzppHwqvKRGBuspa4100000000000000000000000000000000000000000000000000000" },
+  "kris_piano_lower": { dur: 42.25, env: "0005umemkmNJwwl9FOFsiewPtkmlpKzmheee8wztswnF+KuqJMmsQIFyjNHntvqosrSLukeaEomzMxCGqednHlkchfG+ZFrempv~-PtkfeApfJmkL|LtAncbfxPEzxqA-JArha;VujtsO*PAmdF~PwssrZUEtjsFyopmhZyihejPplonn&VpljfZJmjkhFCre77eAFphge9EkdwomQRIsjb=~$GodSWAKIzOztgenUNALQvrohb89.:IAwuItjeemKndVUGFofcetAiiA+CDohcciBzpQAtvniceDXCm&=QWvstmoKKAtqkkPIshdsPOCzss#Jmecm&NrklhP<#LvkkzYsdejfedM<Pmopfgin$IogeaeKmfea9cenDxsmjebEWJAmd8971210000000000000000000000000" },
+  "kris_piano_prophecy": { dur: 37.751, env: "00mtjokDUBwgAVFpgFPnpmEKrjgiaAAuAr-TEvWysWNFnVDrAstvUNsicHqtTzNzffAnhelv?#Ckor:}VtkdDsBtl@+zAkcgGPDBt#VFtfW&tqwP:PtfZ_HvuN&JurFFtqm#yjhtMspqI;AnmLYqlmCIqa7hIDkidBreArJWGoe_~TtdZPMMHCqhfLTEXGtqfaa_%GACAnfeJtg&SIpfdltii<IymcdwFtTBysken(FD}#!tyqyRIytkJPtijUQFzu*DheF-Ammi~-LumE#kfmheG{Lntijj$OmhcwEhgbbeoHAsmfc&PClca7210000000000000000000000000000000000000000000000000000000000000" },
+  "kris_piano_quiz": { dur: 17.788, env: "00IGneErb5Xm5321KuGKwEG.]g720001SIrzWIkIPa753XQOOzeYyJueJPh89mTLujPycF&g432tqBJtiUtXN)m21221[+Iq(o6+Xe9$Ox.&Fx~!NNPAtpk8500000000000000000000000000000000000000000000000000000000" },
+  "kris_piano_rouxls": { dur: 52.694, env: "1~INRHn@.SyFe7d;ZN=W+Vut&-PXG:ZUIO?ImSJAyWOERKPNVPHSSwMIzE)IRysG!yux==NAFtBSUSOQLMJWIWDZ&MU<$$CmBNrlq<RGsOMHAXSCtAWutL.PAwRNKIBB)=:&CrCyls&PAEJDB$%Cz:VUQ#Ir:MwAn-PIzKHXSQMULWSPEKHApNImj!%CDSWJxr[WHz!%AoL+Lutzkiy<BCx-UNI!RYQyzvuJrVOKIGOPPtGXTOPQDIIGAS!*XIFR*LPWIy+WOAEtTWVXMLUMTPD%WPFOITqGL%Y$$U#>UIvEONLOMQHTMPMNMGJR*ONM>#Fy.SACH^WGwFznn_-RFAAtuz|WFAzspmo:WA)MtDvAU%JMHPPPHTH(NIIEHZDsKGXGHx+!PGNHCw;OwsEHQPG.Mwutu#SGVuyJGxS=VQEwwvtyJVPzW@Gg62U_Q#Oe53Q_IGy:SOA*ULFc31000000000000000000000000000000000000000000000000000000000000" },
+  "kris_piano_sevenfour": { dur: 70.886, env: "0iddonEnwkovtUtHvqemAuJwtAoqiCivgvyqBuOCxzovpBvwvoohqytllwrvltFEujtdqtmArBpxnLxxLoriuAxKtninfBpytlAtCwRPILstrOpIAuQBtluugkgidc5tgmugyvDDvxsxiIxRJtknAyPwOnvlqxhwkuvqDGNAAsvrFutttvmywArrAvwmtCzutqkynAmCwwwuPITArjFzAAmntqmFpBmtBxGAIDutBuUwIGAQAtsrmvGsmhjcefQWJzTMumBKtDzwt!LCxDIxsuRAFrGyRUJCI%JIAICAGAGt:SKAzstqpoowtxp.YJBVSApoXECzCuYYGzDWAsmPSEvyxI(MFzUJwqKVHABKvWDqgsqzpnJDysuxU*TBAMvKyEKAxzGDZKAvGUTHFZIAxEsZHwvOSHDIWLwvAp*WJDDwsrlmhljpgI&QECWIsmMEvnAAyXIAzPGEAAUQPFQBWPEuJMAwJWCzDJw?$IAAAxztsnpjkgj:VTJQTKDvtxtvIB<RLCCAHGztAuLDYUIGAICCAytwuJSO&MIDCtDE~UQLMDW-VNIFxvo.QDwROTQJEAvtpszsyuLAQSFEAAstmrvwnFyPMRYQPNLIMILDFyTUDuDCwntKksoAtAvCtejmiqja7762000000000000000000000000000000000000000000000000000000000000" },
+  "kris_piano_shop": { dur: 53.889, env: "0Ai6kt85wr7CGabDn7aEe5jwjctm76te4ipkfGg3mEo9ytzhEibeKtcwphvTweGuzsAxiAFtkrrxN!MyrokhEumjg(VFAg86Cra9&LwCj62u84dDniAn83mm63DrnmBg4Ex61AuCrFqhCQmcvpen.HitnIoGyqS-As~PCzQv9ZVutSn7LoccRwcD*MfgdbDYzbJNnczHqkmmieFtlhIBrsogALEuc9skd!&n7Kf6hPm3NIeqIh8zIvk>;TTJofPzfAsZMCzkvxnmGmaAo7gFpkNPCF)RxDFwtznhHtrsRIzFGpmIvlzjeA:ZHLAnjQAkQ%tApd7DCqExebCyfbGIkpxRFuo*NIBtvHsnDroBEwsSNDSVymVJvxzzzHuuKysDB#PAogTKvsojjvieJstHHqztdkKkesmel88mf7ke87C87sGwozpmOMAIFFHZArNtjZ$JttynwoidwAoemDle77wfeeb755641000000000000000000000000000000000000000000000000000000000" },
+  "kris_piano_waitingroom": { dur: 94.394, env: "0ADkcELAAt>%MxhpvivCpbmBqvoVRABgbeIIIHqjPVOKzsowniWVSQBvxqtXotCamniBPwzhbqIsvAXxn73OCa8vKtrod!yzyNJAtu$Rxe&XJANDqttlcgBXHzCunoomdyfaDmctm8xl9zZyjtRAyrPlg7ImNAym96HHCAAutp620Y)UCtmNJLEvlOH92$Okeq*NKBP~MJgohbZ(PRRoeIQFtCpxhbkWfCub9KDztPXBoheFmKNwcLPDtJLnjsgedvaw&PGwtnmwugmqefsaGi77PRFje(wotWm_%QIwiwGwwqgstkrmsNwm!Iytt#ttpdD&mD)IyGmlApOSiNOxO@TDskAYIzDskiY@OslkhPt97NCEFtxpnws$RBsRBQNnfKvQHPz#SFhaRXEzBGyHCEA%VysoSGAzIHJLKIOGRAbqPIJBtstwItpylgff[WEdNAHznpGtnKLC&OFDHKWHRMQIADIV%QIA&PGGAxHLUTuqWQFAFCPCJEvuztsPAKDzCPIWFDAIHzxu%PAtEAt^;NRWEFunljRDAsmlik&JumNRFknslOhMqIeCg65SHCAOxlMq5HTPFvoELEJzvDPtk[^(RCtvtu:VXNmGHC@PEPDtISxkxR9CgMAIj9a74IIBtsylqnIwHqFUIAUTIEIQqjttniu9B!IArvqxycme7yft&HCuIEvrMonm?!NEEEApoLytvEtzzqmqq(TFoNMDxIvW>YCIQ#QztrOAtZLsvyxOzAWtsu!CtuWDEzMwZAvtyxJxQGJLFzAqnOLxLJzyysVPAPyCSyxCAuJIAA@=KuzCsnVYxotF94LQvHCQEyzRW*U!Cwk7H(MHEKxKQGDw(PFtFzGA!$HAuyvtr$Nytpmijihlhf5000000000000000000000000000000000000000000000000000000000000" }
+};
+
+/* ---------------- dialogue engine (ported from the Egg Room prototype) ---------------- */
+const DLG = {
+  queue: [], pos: 0, showing: false, typing: true,
+  choice: -1, choiceSel: 0, timer: 0, pause: 0, page: null, onDone: null
+};
+function stripGameCodes(s) {
+  return s.replace(/\[A-Z][0-9]*/g, "").replace(/\[a-z0-9]/g, "");
+}
+function pushPage(text, opts = {}) {
+  DLG.queue.push({
+    text: stripGameCodes(text).replace(/[\/%]+$/, ""),
+    choices: opts.choices || null, slow: !!opts.slow, onDone: opts.onDone || null
+  });
+}
+function pushChoice(msg, options, onDone) { pushPage(msg, { choices: options, onDone }); }
+function dMake() {
+  if (DLG.queue.length === 0) return;
+  const p = DLG.queue.shift();
+  DLG.page = p; DLG.pos = 0; DLG.typing = true; DLG.choice = -1;
+  DLG.choiceSel = 0; DLG.timer = 0; DLG.pause = 0; DLG.showing = true; DLG.onDone = p.onDone;
+}
+function dDone() {
+  if (!DLG.showing) return;
+  if (DLG.typing) { DLG.typing = false; DLG.pos = DLG.page.text.length; return; }
+  if (DLG.page.choices && DLG.choice === -1) return;
+  DLG.showing = false;
+  const cb = DLG.onDone; DLG.onDone = null;
+  if (cb) cb();
+  if (DLG.queue.length > 0) dMake();
+}
+function startDialogue() { DLG.showing = true; dMake(); }
+
+function handleChoiceInput() {
+  if (!DLG.showing || !DLG.page.choices || DLG.choice !== -1) return;
+  if (DLG.typing) return;              // Z while typing only finishes the text
+  const c = DLG.page.choices;
+  if (anyKey(["arrowup", "w", "arrowdown", "s", "arrowleft", "a", "arrowright", "d"])) {
+    DLG.choiceSel = (DLG.choiceSel + 1) % c.length;
+    playSound(cursorEl, 0.6);
+  }
+  if (anyKey(["z", "enter", " "])) {
+    playSound(cursorEl, 0.6);
+    DLG.choice = DLG.choiceSel;
+    dDone();
+  }
+}
+function updateDialogue() {
+  if (!DLG.showing) return;
+  handleChoiceInput();
+  if (DLG.page.choices && DLG.choice === -1 && !DLG.typing) return;
+  if (anyKey(["z", "enter", " "])) { dDone(); return; }
+  if (DLG.typing) {
+    if (DLG.pause > 0) { DLG.pause -= speedScale; return; }
+    const speed = DLG.page.slow ? 0.45 : 0.9;
+    DLG.timer += speed * speedScale;
+    while (DLG.timer >= 1 && DLG.pos < DLG.page.text.length) {
+      const ch = DLG.page.text[DLG.pos];
+      if (ch === "^" && DLG.page.text[DLG.pos + 1] === "1") {
+        DLG.pos += 2; DLG.timer = 0; DLG.pause = 30; break;
+      }
+      DLG.pos++; DLG.timer -= 1;
+      playSound(blipEl, 0.18);
+    }
+    if (DLG.pos >= DLG.page.text.length) DLG.typing = false;
+  }
+}
+// the page text with the ^1 pause markers taken out
+function fullText() {
+  const t = DLG.page.text;
+  let out = "";
+  for (let i = 0; i < t.length; i++) {
+    if (t[i] === "^" && t[i + 1] === "1") { i++; continue; }
+    out += t[i];
+  }
+  return out;
+}
+// how many pause markers the reveal cursor has already passed
+function countPauses() {
+  const t = DLG.page.text;
+  let n = 0;
+  for (let i = 0; i < DLG.pos && i < t.length; i++) {
+    if (t[i] === "^" && t[i + 1] === "1") { n += 2; i++; }
+  }
+  return n;
+}
+function wrapWords(text, maxW) {
+  const lines = [];
+  let line = "";
+  for (const word of text.split(" ")) {
+    const test = line.length ? line + " " + word : word;
+    if (textWidth(test) > maxW && line.length) { lines.push(line); line = word; }
+    else line = test;
+  }
+  lines.push(line);
+  return lines;
+}
+
+function visibleText() {
+  const t = DLG.page.text;
+  let out = "";
+  for (let i = 0; i < DLG.pos; i++) {
+    if (t[i] === "^" && t[i + 1] === "1") { i++; continue; }
+    out += t[i];
+  }
+  return out;
+}
+
+/* ---------------- input ---------------- */
+const keys = {};
+const PRESSED = {};
+window.addEventListener("keydown", e => {
+  if (["ArrowUp","ArrowDown","ArrowLeft","ArrowRight"," "].includes(e.key)) e.preventDefault();
+  if (!e.repeat) PRESSED[e.key.toLowerCase()] = true;
+  keys[e.key.toLowerCase()] = true;
+});
+window.addEventListener("keyup", e => { keys[e.key.toLowerCase()] = false; });
+function pressed(name) { const k = PRESSED[name]; PRESSED[name] = false; return !!k; }
+function anyKey(list) { return list.some(n => pressed(n)); }
+function held(name) { return !!keys[name]; }
+function clearPressed() { for (const k of Object.keys(PRESSED)) PRESSED[k] = false; }
+
+/* ---------------- audio ---------------- */
+function makeEl(src, loop) {
+  const a = new Audio(src);
+  a.loop = !!loop;
+  a.volume = 0.9;
+  return a;
+}
+function playSound(el, vol) {
+  if (!el) return;
+  const c = el.cloneNode();
+  c.volume = vol === undefined ? 0.9 : vol;
+  c.play().catch(() => {});
+}
+function roomMusic(on) {
+  if (!roomMusEl) return;
+  if (on) { roomMusEl.volume = 0.45; roomMusEl.play().catch(() => {}); }
+  else { roomMusEl.pause(); }
+}
+
+/* ---------------- font ---------------- */
+function parseFontCsv(text) {
+  for (const line of text.split(/\r?\n/)) {
+    const p = line.split(";");
+    if (p.length < 7) continue;
+    glyphs[parseInt(p[0], 10)] = {
+      sx: +p[1], sy: +p[2], w: +p[3], h: +p[4], shift: +p[5], offset: +p[6]
+    };
+  }
+}
+function tintAtlas(color) {
+  const out = document.createElement("canvas");
+  out.width = img.font.width; out.height = img.font.height;
+  const c = out.getContext("2d");
+  c.drawImage(img.font, 0, 0);
+  c.globalCompositeOperation = "source-in";
+  c.fillStyle = color;
+  c.fillRect(0, 0, out.width, out.height);
+  return out;
+}
+function textWidth(str) {
+  let w = 0;
+  for (const ch of str) { const g = glyphs[ch.charCodeAt(0)]; w += g ? g.shift : 7; }
+  return w;
+}
+// fnt_main's glyphs are white, so any colour is a source-in fill of the atlas.
+// Cached per colour, built on first use.
+const fontAtlases = {};
+function atlasFor(color) {
+  if (!img.font) return null;
+  if (!fontAtlases[color]) fontAtlases[color] = tintAtlas(color);
+  return fontAtlases[color];
+}
+function drawText(str, x, y, color = "#fff") {
+  const atlas = atlasFor(color);
+  if (!atlas) return;
+  let cx = x;
+  for (const ch of str) {
+    const g = glyphs[ch.charCodeAt(0)];
+    if (!g) { cx += 7; continue; }
+    if (g.w > 0 && g.h > 0) ctx.drawImage(atlas, g.sx, g.sy, g.w, g.h, cx, y + g.offset, g.w, g.h);
+    cx += g.shift;
+  }
+}
+function drawTextScaled(str, x, y, color = "#fff", scale = 1) {
+  const atlas = atlasFor(color);
+  if (!atlas) return;
+  let cx = x;
+  for (const ch of str) {
+    const g = glyphs[ch.charCodeAt(0)];
+    if (!g) { cx += 7 * scale; continue; }
+    if (g.w > 0 && g.h > 0) {
+      ctx.drawImage(atlas, g.sx, g.sy, g.w, g.h,
+                    cx, y + g.offset * scale, g.w * scale, g.h * scale);
+    }
+    cx += g.shift * scale;
+  }
+}
+
+/* ---------------- collision ---------------- */
+function onFloor(x, y) {
+  const inRoom = x >= FLOOR_L && x <= FLOOR_R && y >= FLOOR_TOP && y <= FLOOR_BOT;
+  const inHall = x >= HALL.x0 && x <= HALL.x1 && y >= FLOOR_TOP && y <= HALL.y1;
+  return inRoom || inHall;
+}
+function roomCollides(x, y) {
+  if (!onFloor(x, y)) return true;
+  for (const s of SOLIDS) {
+    if (x > s.x && x < s.x + s.w && y > s.y && y < s.y + s.h) return true;
+  }
+  return false;
+}
+function kCollides(x, y) { return roomCollides(x, y); }
+
+/* ---------------- movement ----------------
+   Port of obj_mainchara/Step_0.gml (light world). Deltarune runs at 30fps and
+   this prototype at 60fps, so every per-frame constant is halved and then
+   scaled by speedScale so the feel is identical on any refresh rate.        */
+const FACING_DIR = ["d", "r", "u", "l"];   // 0=down 1=right 2=up 3=left
+const DT = { facing: 2, idleLast: true, walktimer: 0, walkbuffer: 0, runtimer: 0 };
+
+function updatePlayer() {
+  if (settings.walkMode === 1) updatePlayerClassic();
+  else updatePlayerDT();
+}
+
+function updatePlayerClassic() {
+  if (DLG.showing || state.seated) { KRIS.moving = false; return; }
+  let mx = 0, my = 0;
+  if (held("arrowleft") || held("a")) mx -= 1;
+  if (held("arrowright") || held("d")) mx += 1;
+  if (held("arrowup") || held("w")) my -= 1;
+  if (held("arrowdown") || held("s")) my += 1;
+  KRIS.moving = (mx !== 0 || my !== 0);
+  if (!KRIS.moving) { KRIS.animT = 0; KRIS.anim = 0; return; }
+  if (mx !== 0 && my !== 0) { mx *= 0.7071; my *= 0.7071; }
+  KRIS.dir = my < 0 ? "u" : my > 0 ? "d" : mx < 0 ? "l" : "r";
+  const s = settings.walkSpeed * speedScale;
+  if (!kCollides(KRIS.x + mx * s, KRIS.y)) KRIS.x += mx * s;
+  if (!kCollides(KRIS.x, KRIS.y + my * s)) KRIS.y += my * s;
+  KRIS.animT += speedScale;
+  if (KRIS.animT >= 9) { KRIS.animT = 0; KRIS.anim = (KRIS.anim + 1) % 4; }
+}
+
+function updatePlayerDT() {
+  if (DLG.showing || state.seated) { KRIS.moving = false; return; }
+  const nowx = KRIS.x, nowy = KRIS.y;
+  const press_l = (held("arrowleft")  || held("a")) ? 1 : 0;
+  const press_r = (held("arrowright") || held("d")) ? 1 : 0;
+  const press_u = (held("arrowup")    || held("w")) ? 1 : 0;
+  const press_d = (held("arrowdown")  || held("s")) ? 1 : 0;
+  const nopress = !(press_l || press_r || press_u || press_d);
+  const run = (held("x") || held("shift")) ? 1 : 0;
+
+  const boost = settings.walkSpeed / 3;
+  let wspeed = settings.walkSpeed;
+  if (run === 1) {
+    wspeed = settings.walkSpeed + boost;
+    if (DT.runtimer > 10) wspeed = settings.walkSpeed + 2 * boost;
+    if (DT.runtimer > 60) wspeed = settings.walkSpeed + 3 * boost;
+  }
+  wspeed *= speedScale;
+
+  let px = 0, py = 0, pressdir = -1;
+  if (press_r === 1) { px = wspeed;  pressdir = 1; }
+  if (press_l === 1) { px = -wspeed; pressdir = 3; }
+  if (press_d === 1) { py = wspeed;  pressdir = 0; }
+  if (press_u === 1) { py = -wspeed; pressdir = 2; }
+
+  if (DT.idleLast && pressdir !== -1) DT.facing = pressdir;
+  if (DT.facing === 2) { if (press_d === 1) DT.facing = 0; if (press_u === 0 && pressdir !== -1) DT.facing = pressdir; }
+  if (DT.facing === 0) { if (press_u === 1) DT.facing = 2; if (press_d === 0 && pressdir !== -1) DT.facing = pressdir; }
+  if (DT.facing === 3) { if (press_r === 1) DT.facing = 1; if (press_l === 0 && pressdir !== -1) DT.facing = pressdir; }
+  if (DT.facing === 1) { if (press_l === 1) DT.facing = 3; if (press_r === 0 && pressdir !== -1) DT.facing = pressdir; }
+
+  let xmeet = 0, ymeet = 0, xymeet = 0, bkx = 0, bky = 0, bkxy = 0;
+  if (kCollides(KRIS.x + px, KRIS.y + py)) xymeet = 1;
+  if (kCollides(KRIS.x + px, KRIS.y)) {
+    xmeet = 1;
+    for (let g = wspeed; g > 0; g -= 1) {
+      if (press_d === 0 && !kCollides(KRIS.x + px, KRIS.y - g)) { KRIS.y -= g; py = 0; break; }
+      if (press_u === 0 && !kCollides(KRIS.x + px, KRIS.y + g)) { KRIS.y += g; py = 0; break; }
+    }
+    if (px > 0) { for (let i = px; i >= 0; i -= 1) if (!kCollides(KRIS.x + i, KRIS.y)) { px = i; bkx = 1; break; } }
+    if (px < 0) { for (let i = px; i <= 0; i += 1) if (!kCollides(KRIS.x + i, KRIS.y)) { px = i; bkx = 1; break; } }
+    if (bkx === 0) px = 0;
+  }
+  if (kCollides(KRIS.x, KRIS.y + py)) {
+    ymeet = 1;
+    for (let g = wspeed; g > 0; g -= 1) {
+      if (press_r === 0 && !kCollides(KRIS.x - g, KRIS.y + py)) { KRIS.x -= g; px = 0; break; }
+      if (press_l === 0 && !kCollides(KRIS.x + g, KRIS.y + py)) { KRIS.x += g; px = 0; break; }
+    }
+    if (py > 0) { for (let i = py; i >= 0; i -= 1) if (!kCollides(KRIS.x, KRIS.y + i)) { py = i; bky = 1; break; } }
+    if (py < 0) { for (let i = py; i <= 0; i += 1) if (!kCollides(KRIS.x, KRIS.y + i)) { py = i; bky = 1; break; } }
+    if (bky === 0) py = 0;
+  }
+  if (kCollides(KRIS.x + px, KRIS.y + py)) {
+    xymeet = 1;
+    let i = px, j = py;
+    while (j !== 0 || i !== 0) {
+      if (!kCollides(KRIS.x + i, KRIS.y + j)) { px = i; py = j; bkxy = 1; break; }
+      j = Math.abs(j) >= 1 ? (j > 0 ? j - 1 : j + 1) : 0;
+      i = Math.abs(i) >= 1 ? (i > 0 ? i - 1 : i + 1) : 0;
+    }
+    if (bkxy === 0) { px = 0; py = 0; }
+  }
+
+  let runmove = 0;
+  if (run === 1 && xmeet === 0 && ymeet === 0 && xymeet === 0) {
+    if (px !== 0 || py !== 0) { runmove = 1; DT.runtimer += 0.5 * speedScale; }
+    else DT.runtimer = 0;
+  } else DT.runtimer = 0;
+
+  KRIS.x += px; KRIS.y += py;
+  KRIS.dir = FACING_DIR[DT.facing];
+
+  let walk = 0;
+  if ((KRIS.x !== nowx || KRIS.y !== nowy) && !DT.idleLast) walk = 1;
+  if (walk === 1) DT.walkbuffer = 6;
+  if (DT.walkbuffer > 3) {
+    DT.walktimer += 0.75 * speedScale;
+    if (runmove === 1) DT.walktimer += 0.75 * speedScale;
+    if (DT.walktimer >= 40) DT.walktimer -= 40;
+    KRIS.anim = DT.walktimer < 10 ? 0 : DT.walktimer < 20 ? 1 : DT.walktimer < 30 ? 2 : 3;
+  }
+  if (DT.walkbuffer <= 0) {
+    DT.walktimer = DT.walktimer < 10 ? 9.5 : DT.walktimer < 20 ? 19.5 : DT.walktimer < 30 ? 29.5 : 39.5;
+    KRIS.anim = 0;
+  }
+  DT.walkbuffer -= 0.375 * speedScale;
+  DT.idleLast = nopress;
+  KRIS.moving = walk === 1;
+}
+
+/* ---------------- camera ----------------
+   obj_mainchara/Step_2.gml, light-world branch. There is no smoothing at all:
+   every step the view is *assigned* the player's position and then clamped to
+   the room.
+
+       wd = (x - floor(view_w / 2)) + 11;
+       ht = (y - floor(view_h / 2)) + 17;
+
+   x,y there are the sprite's top-left corner, so +11/+17 lands on Kris's
+   middle. This prototype tracks Kris by his feet, hence the conversion below.
+   The result is rigid and pixel-snapped, which is how the game reads.
+
+   The one place Deltarune does ease the camera is a cutscene move
+   (obj_camera_advanced, panStyle 1 = lerp toward a target). Sitting down at
+   the piano is exactly that, so the push-in eases and nothing else does.     */
+const ROOM_L = 40, ROOM_R = 607, ROOM_T = 8, ROOM_B = 199;
+const ZOOM_WALK = 1, ZOOM_PLAY = 1.32;
+const CAM_KRIS_DX = 11 - 9.5;    // sprite-left -> feet-centre, then the game's +11
+const CAM_KRIS_DY = 17 - 38;     // sprite-top  -> feet,        then the game's +17
+
+function camView() {
+  return { w: W / (ROOM_SCALE * CAMERA.zoom), h: H / (ROOM_SCALE * CAMERA.zoom) };
+}
+function updateCamera(snap) {
+  const wantZoom = state.seated ? ZOOM_PLAY : ZOOM_WALK;
+  if (snap) CAMERA.zoom = wantZoom;
+  else CAMERA.zoom += (wantZoom - CAMERA.zoom) * (1 - Math.pow(0.93, speedScale));
+
+  const v = camView();
+  const bottom = KRIS.y > FLOOR_BOT - 4 ? HALL.y1 : ROOM_B;
+  const clamp = (val, lo, hi) => (lo > hi ? Math.round((lo + hi) / 2) : Math.max(lo, Math.min(hi, val)));
+
+  // The pan is still running while the zoom settles, so getting up eases back
+  // out before the rigid follow takes over again.
+  if (state.seated || CAMERA.zoom > ZOOM_WALK + 0.005) {
+    const fx = state.seated ? KEYS.x + KEYS.w / 2 : KRIS.x + CAM_KRIS_DX;
+    const fy = state.seated ? PIANO.y + 60 : KRIS.y + CAM_KRIS_DY;
+    CAMERA.tx = clamp(fx - v.w / 2, ROOM_L, ROOM_R - v.w);
+    CAMERA.ty = clamp(fy - v.h / 2, ROOM_T, bottom - v.h);
+    if (snap) { CAMERA.x = CAMERA.tx; CAMERA.y = CAMERA.ty; return; }
+    const follow = 1 - Math.pow(0.90, speedScale);
+    CAMERA.x += (CAMERA.tx - CAMERA.x) * follow;
+    CAMERA.y += (CAMERA.ty - CAMERA.y) * follow;
+    return;
+  }
+  // walking: assigned, not eased, and snapped to whole pixels
+  CAMERA.tx = clamp(Math.round(KRIS.x + CAM_KRIS_DX) - Math.floor(v.w / 2), ROOM_L, ROOM_R - v.w);
+  CAMERA.ty = clamp(Math.round(KRIS.y + CAM_KRIS_DY) - Math.floor(v.h / 2), ROOM_T, bottom - v.h);
+  CAMERA.x = CAMERA.tx;
+  CAMERA.y = CAMERA.ty;
+}
+
+/* ---------------- the piano ----------------
+   obj_ch4_DCA09_piano/Create_0.gml starts the track and parks a marker on
+   spr_kris_piano_full; its Step_0.gml then sets
+
+       image_index = 524 * ((pos - 0) / (audio_sound_length(song) - 0.75 - 0))
+
+   every frame, so the animation is a direct read-out of the playhead. That
+   formula is used verbatim for kris_piano_lower, the track the object plays.
+   The other eight tracks were never animated, so they drive the same 525
+   frames at the animation's own pace (525 frames over lower's 42.25s) with
+   the tempo pushed by the track's loudness envelope - loud passages move
+   Kris's hands faster, quiet ones let them settle.                          */
+const NATIVE_FPS = 524 / 41.5;   // spr_kris_piano_full's own rate, from lower.ogg
+
+function startSong(idx) {
+  stopSong(false);
+  state.songIdx = idx;
+  const s = SONGS[idx];
+  songEl = makeEl(s.file, settings.autoLoop);
+  songEl.volume = 0.9;
+  songEl.play().catch(() => {});
+  songEl.addEventListener("ended", () => {
+    if (!settings.autoLoop) finishSong();
+  });
+  state.playing = true;
+  state.frame = 0;
+  state.played[s.id] = true;
+  roomMusic(false);
+}
+
+function stopSong(resumeRoom) {
+  if (songEl) { songEl.pause(); songEl.currentTime = 0; songEl = null; }
+  state.playing = false;
+  if (resumeRoom) roomMusic(true);
+}
+
+function finishSong() {
+  if (!state.seated) { stopSong(false); return; }   // Kris already got up
+  stopSong(false);
+  standUp(true);
+}
+
+function resetPose() {
+  PUP.l = 2; PUP.r = 2; PUP.lDown = false; PUP.rDown = false;
+  PUP.lWasDown = false; PUP.rWasDown = false;
+  REC.mode = 0; REC.l = ""; REC.r = ""; REC.frame = 0;
+  state.keyGlow.length = 0;
+}
+function sitDown(idx) {
+  state.seated = true;
+  state.freePlay = false;
+  KRIS.dir = "u";
+  KRIS.moving = false;
+  resetPose();
+  startSong(idx);
+}
+function sitDownFreePlay() {
+  stopSong(false);
+  state.seated = true;
+  state.freePlay = true;
+  KRIS.dir = "u";
+  KRIS.moving = false;
+  resetPose();
+  roomMusic(false);
+}
+
+function standUp(sayLine) {
+  stopSong(true);
+  state.seated = false;
+  state.freePlay = false;
+  resetPose();
+  KRIS.x = PIANO_SPOT.x; KRIS.y = PIANO_SPOT.y; KRIS.dir = "u";
+  DT.facing = 2; DT.idleLast = true;
+  DT.walktimer = 0; DT.walkbuffer = 0; DT.runtimer = 0;
+  state.keyGlow.length = 0;
+  if (sayLine) {
+    pushPage("* (Kris let the last chord ring out.)/");
+    startDialogue();
+  }
+}
+
+function updatePiano() {
+  if (!state.seated) return;
+
+  if (state.freePlay) {                 // Kris is yours; no track, no timeline
+    updateFreePlay();
+    recTick();
+    state.keyGlow = state.keyGlow.filter(k => (k.t -= speedScale) > 0);
+    return;
+  }
+  if (!state.playing || !songEl) return;
+  const s = SONGS[state.songIdx];
+  const pos0 = songEl.currentTime || 0;
+
+  if (usePuppet()) {
+    const perf = performanceFor(s.id);
+    if (REC.mode === 1) { updateFreePlay(); recTick(); }   // playing along, being taped
+    else if (perf) applyPerformance(perf, pos0);
+    // the keyboard lights under whichever hand just came down
+    state.keyGlow = state.keyGlow.filter(k => (k.t -= speedScale) > 0);
+    if (REC.mode !== 1) {
+      if (PUP.lDown && !PUP.lWasDown) strikeKeyAt(PUP.l, true);
+      if (PUP.rDown && !PUP.rWasDown) strikeKeyAt(PUP.r, false);
+    }
+    PUP.lWasDown = PUP.lDown; PUP.rWasDown = PUP.rDown;
+    const done = (ENV[s.id] ? pos0 >= ENV[s.id].dur - 0.05 : false);
+    if (done && !settings.autoLoop) finishSong();
+    return;
+  }
+  const dur = (ENV[s.id] && ENV[s.id].dur) || songEl.duration || 1;
+  const pos = songEl.currentTime || 0;
+
+  if (s.id === SYNCED_SONG) {
+    // obj_ch4_DCA09_piano/Step_0.gml, verbatim
+    const progress = (pos - 0) / (dur - 0.75 - 0);
+    state.frame = Math.max(0, Math.min(524, 524 * progress));
+    if (progress >= 1 && !settings.autoLoop) { finishSong(); return; }
+  } else {
+    const loud = envAt(s, pos);
+    const fps = NATIVE_FPS * (0.55 + 0.95 * loud);
+    state.frame = (state.frame + fps * (speedScale / 60)) % PIANO_SHEET.frames;
+  }
+
+  // strike a key under whichever hand is further out, scaled by loudness
+  const loud = envAt(s, pos);
+  state.keyGlow = state.keyGlow.filter(k => (k.t -= speedScale) > 0);
+  if (loud > 0.22 && Math.random() < 0.10 + 0.35 * loud) {
+    const w = 2 + Math.floor(Math.random() * 2);
+    state.keyGlow.push({ x: KEYS.x + Math.floor(Math.random() * (KEYS.w - w)), w, t: 8 + 10 * loud });
+  }
+}
+
+/* ---------------- the puppet: playback, live play, recording ---------------- */
+
+// which performance a song uses: yours if you recorded one, else the generated one
+function performanceFor(songId) {
+  return recordings[songId] || (typeof PERFORMANCES !== "undefined" ? PERFORMANCES[songId] : null);
+}
+
+// Read one frame out of a recording string. Entries are "0" + char, and the
+// character is a position to hold or "W" for nothing.
+function perfCharAt(str, frame) {
+  const i = frame * 2 + 1;
+  return (i >= 0 && i < str.length) ? str[i] : "W";
+}
+
+// Drive the pose from a performance, exactly as the tool's playback branch does:
+// a position character moves the hand there and puts the key down; "W" lifts the
+// arm but leaves it where it was.
+function applyPerformance(perf, t) {
+  const f = Math.floor(t * (perf.fps || 30));
+  const lc = perfCharAt(perf.l, f), rc = perfCharAt(perf.r, f);
+  PUP.lDown = lc !== "W";
+  PUP.rDown = rc !== "W";
+  if (PUP.lDown) PUP.l = POS_CHAR[lc];
+  if (PUP.rDown) PUP.r = POS_CHAR[rc];
+}
+
+/* --- notes --- */
+function playNote(midi, vol) {
+  if (!noteEl) return;
+  const c = noteEl.cloneNode();
+  c.volume = vol === undefined ? 0.55 : vol;
+  c.playbackRate = Math.pow(2, (midi - NOTE_BASE_MIDI) / 12);
+  c.play().catch(() => {});
+}
+
+/* --- live play: the tool's own two key rows --- */
+function updateFreePlay() {
+  let lPos = -1, rPos = -1;
+  for (let i = 0; i < 6; i++) {
+    const lp = 5 - i, rp = 5 - i;             // Z and P are position 5, N and T are 0
+    if (held(LEFT_KEYS[i]))  lPos = lp;
+    if (held(RIGHT_KEYS[i])) rPos = rp;
+    if (pressed(LEFT_KEYS[i]))  { playNote(LEFT_POS_MIDI[lp]); strikeKeyAt(lp, true); }
+    if (pressed(RIGHT_KEYS[i])) { playNote(RIGHT_POS_MIDI[rp]); strikeKeyAt(rp, false); }
+  }
+  PUP.lDown = lPos >= 0;
+  PUP.rDown = rPos >= 0;
+  if (lPos >= 0) PUP.l = lPos;
+  if (rPos >= 0) PUP.r = rPos;
+}
+
+// light up the part of the keyboard the hand is over
+function strikeKeyAt(pos, leftHand) {
+  const half = KEYS.w / 2;
+  const t = (pos + 0.5) / 6;
+  const x = leftHand ? KEYS.x + half * (1 - t) : KEYS.x + half + half * t;
+  state.keyGlow.push({ x: Math.round(x) - 2, w: 4, t: 14 });
+}
+
+/* --- recorder: W cycles off -> recording -> kept, like KeyPress_87 --- */
+function recTick() {
+  if (REC.mode !== 1) return;
+  REC.l += "0" + (PUP.lDown ? CHAR_POS[PUP.l] : "W");
+  REC.r += "0" + (PUP.rDown ? CHAR_POS[PUP.r] : "W");
+  REC.frame++;
+}
+function toggleRecorder() {
+  if (REC.mode === 0) {
+    REC.mode = 1; REC.l = ""; REC.r = ""; REC.frame = 0;
+    if (songEl) songEl.currentTime = 0;
+    playSound(cursorEl, 0.7);
+  } else if (REC.mode === 1) {
+    REC.mode = 2;
+    const id = SONGS[state.songIdx].id;
+    if (REC.frame > 15) {
+      recordings[id] = { fps: 30, frames: REC.frame, l: REC.l, r: REC.r };
+      saveRecordings();
+    }
+    playSound(cursorEl, 0.7);
+  } else {
+    REC.mode = 0;
+    playSound(cursorEl, 0.5);
+  }
+}
+function clearRecording() {
+  const id = SONGS[state.songIdx].id;
+  if (recordings[id]) { delete recordings[id]; saveRecordings(); playSound(cursorEl, 0.5); }
+}
+const REC_KEY = "krispiano.recordings.v1";
+function loadRecordings() {
+  try {
+    const r = JSON.parse(localStorage.getItem(REC_KEY) || "{}");
+    for (const k of Object.keys(r)) recordings[k] = r[k];
+  } catch (_) { /* nothing saved yet, or storage is off */ }
+}
+function saveRecordings() {
+  try { localStorage.setItem(REC_KEY, JSON.stringify(recordings)); } catch (_) {}
+}
+
+/* --- drawing --- */
+// Draw_0.gml: arms at (x - 2, y), body at (x, y), arms first so the body
+// covers the shoulders.
+function drawPuppet() {
+  const body = pal("puppetBody"), larm = pal("puppetLarm"), rarm = pal("puppetRarm");
+  if (!body || !larm || !rarm) return;
+  const w = PUPPET_CELL.w, h = PUPPET_CELL.h;
+  const li = PUP.l + (PUP.lDown ? 6 : 0);
+  const ri = PUP.r + (PUP.rDown ? 6 : 0);
+  ctx.drawImage(larm, li * w, 0, w, h, PUPPET.x + PUPPET_CELL.armDX, PUPPET.y, w, h);
+  ctx.drawImage(rarm, ri * w, 0, w, h, PUPPET.x + PUPPET_CELL.armDX, PUPPET.y, w, h);
+  ctx.drawImage(body, 0, 0, PUPPET_CELL.bodyW, h, PUPPET.x, PUPPET.y, PUPPET_CELL.bodyW, h);
+}
+
+/* ---------------- interaction ---------------- */
+function facingSpot(sx, sy, sw, sh, dir) {
+  // Kris must be standing just outside the box, looking at it
+  const inX = KRIS.x > sx - 12 && KRIS.x < sx + sw + 12;
+  const inY = KRIS.y > sy - 14 && KRIS.y < sy + sh + 22;
+  return inX && inY && KRIS.dir === dir;
+}
+function nearPiano() {
+  return KRIS.dir === "u" && Math.abs(KRIS.x - PIANO_SPOT.x) < 40 &&
+         KRIS.y > PIANO.y + 70 && KRIS.y < PIANO.y + 118;
+}
+function nearTree()  { return facingSpot(TREE.x + 6, TREE.y + 90, 78, 46, "u"); }
+function nearTable() { return facingSpot(300, 90, 148, 88, "u"); }
+function nearDoor()  { return facingSpot(DOOR.x, DOOR.y, DOOR.w, DOOR.h, "u"); }
+function nearKitchen(){ return facingSpot(58, 40, 150, 59, "u"); }
+
+// index 0 in the picker is free play; the songs follow
+const FREE_PLAY_ROW = 0;
+function pickerRows() { return SONGS.length + 1; }
+
+function openPicker() {
+  state.pickerOpen = true;
+  state.pickerSel = state.freePlay ? FREE_PLAY_ROW : state.songIdx + 1;
+  playSound(cursorEl, 0.6);
+}
+
+function pianoInteract() {
+  pushPage("* (It's the family piano.)^1 (Its lid is propped open.)/");
+  pushChoice("* (Play something?)/", ["Play", "Not now"], () => {
+    if (DLG.choice === 0) openPicker();
+  });
+  startDialogue();
+}
+
+function handleInteract() {
+  if (DLG.showing) {
+    if (!(DLG.page.choices && DLG.choice === -1)) {
+      if (anyKey(["z", "enter", " "])) dDone();
+    }
+    return;
+  }
+  if (state.seated) return;
+  if (!anyKey(["z", "enter", " "])) return;
+  if (nearPiano())  { pianoInteract(); return; }
+  if (nearTree())   { pushPage("* (A tree, wrapped in red ribbon.)^1 (Someone tucked the ornaments where they'd catch the light.)/"); startDialogue(); return; }
+  if (nearTable())  { pushPage("* (The dining table is set for a crowd.)^1 (A dish waits in the middle, untouched.)/"); startDialogue(); return; }
+  if (nearDoor())   { playSound(doorCloseEl, 0.4); pushPage("* (The front door.)^1 (It's cold out there.)/"); startDialogue(); return; }
+  if (nearKitchen()){ pushPage("* (The kitchen counter.)^1 (Something sweet was made here recently.)/"); startDialogue(); return; }
+}
+
+/* ---------------- song picker ---------------- */
+function handlePicker() {
+  if (!state.pickerOpen) return;
+  const n = pickerRows();
+  if (anyKey(["arrowup", "w"]))   { state.pickerSel = (state.pickerSel + n - 1) % n; playSound(cursorEl, 0.5); }
+  if (anyKey(["arrowdown", "s"])) { state.pickerSel = (state.pickerSel + 1) % n; playSound(cursorEl, 0.5); }
+  if (anyKey(["z", "enter", " "])) {
+    state.pickerOpen = false;
+    playSound(cursorEl, 0.6);
+    if (state.pickerSel === FREE_PLAY_ROW) sitDownFreePlay();
+    else sitDown(state.pickerSel - 1);
+    return;
+  }
+  if (anyKey(["x", "escape", "backspace"])) {
+    state.pickerOpen = false;
+    playSound(cursorEl, 0.5);
+  }
+}
+
+// While the piano keys are live they own the keyboard, so only Escape and the
+// recorder key stay bound. Otherwise the ordinary seated controls apply.
+function keysAreLive() { return state.freePlay || REC.mode === 1; }
+
+function handleSeated() {
+  if (!state.seated || state.pickerOpen || DLG.showing) return;
+  if (anyKey(["escape"])) { standUp(false); return; }
+  if (pressed("w")) { if (!isSyncedSong() || state.freePlay) toggleRecorder(); return; }
+  if (keysAreLive()) return;                    // Z X C V B N / P O I U Y T are notes now
+  if (anyKey(["x", "backspace"])) { standUp(false); return; }
+  if (anyKey(["c", "tab"])) { openPicker(); return; }   // switch tracks without standing
+  if (pressed("r")) { clearRecording(); return; }
+  if (pressed("l")) {
+    updateSetting(() => { settings.autoLoop = !settings.autoLoop; });
+    if (songEl) songEl.loop = settings.autoLoop;
+  }
+}
+
+/* ---------------- render ---------------- */
+function drawSeatedKris() {
+  if (usePuppet()) { drawPuppet(); return; }
+  const sheet = pal("pianoFull");
+  if (!sheet) return;
+  const f = Math.max(0, Math.min(PIANO_SHEET.frames - 1, Math.floor(state.frame)));
+  const cell = PIANO_SHEET.cell;
+  const sx = (f % PIANO_SHEET.cols) * cell;
+  const sy = Math.floor(f / PIANO_SHEET.cols) * cell;
+  ctx.drawImage(sheet, sx, sy, cell, cell, SEAT.x, SEAT.y, cell, cell);
+}
+
+function drawWalkingKris() {
+  const spr = krisWalk[KRIS.dir][KRIS.anim];
+  if (!spr) return;
+  ctx.drawImage(spr, Math.round(KRIS.x) - spr.width / 2, Math.round(KRIS.y) - spr.height);
+}
+
+function drawRoom() {
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0, 0, ROOM_W, ROOM_H);
+  if (img.roomBg) ctx.drawImage(img.roomBg, 0, 0);
+
+  // Kris is behind the tree/piano while walking above them, in front below.
+  const krisDepth = state.seated ? PIANO.y + 96 : KRIS.y;
+  const props = [
+    { y: TREE.y + 134,  draw: () => { if (img.tree) ctx.drawImage(img.tree, TREE.x, TREE.y); } },
+    { y: PIANO.y + 95,  draw: drawPiano },
+    { y: krisDepth + 0.5, draw: () => { if (state.seated) drawSeatedKris(); else drawWalkingKris(); } }
+  ];
+  props.sort((a, b) => a.y - b.y);
+  for (const p of props) p.draw();
+}
+
+function drawPiano() {
+  if (img.piano) ctx.drawImage(img.piano, PIANO.x, PIANO.y);
+  if (img.bench) ctx.drawImage(img.bench, BENCH.x, BENCH.y);
+  // struck keys: a soft shadow on the key band while Kris plays
+  if (state.seated && state.playing) {
+    ctx.fillStyle = "rgba(110, 130, 140, 0.55)";
+    for (const k of state.keyGlow) ctx.fillRect(k.x, KEYS.y + 1, k.w, KEYS.h - 1);
+  }
+}
+
+// While Kris plays, the room falls back a little. Pure presentation - it just
+// pushes the eye toward the piano.
+function drawRoomDim() {
+  const amt = (CAMERA.zoom - ZOOM_WALK) / (ZOOM_PLAY - ZOOM_WALK);
+  if (amt <= 0.01) return;
+  const g = ctx.createRadialGradient(W * 0.66, H * 0.52, H * 0.20, W * 0.66, H * 0.52, H * 0.95);
+  g.addColorStop(0, "rgba(24, 18, 34, 0)");
+  g.addColorStop(1, "rgba(24, 18, 34, " + (0.42 * amt).toFixed(3) + ")");
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+}
+
+function drawImageFlipped(sprite, x, y, w, h, flipX, flipY) {
+  ctx.save();
+  ctx.translate(x + (flipX ? w : 0), y + (flipY ? h : 0));
+  ctx.scale(flipX ? -1 : 1, flipY ? -1 : 1);
+  ctx.drawImage(sprite, 0, 0, w, h);
+  ctx.restore();
+}
+function drawOfficialDarkBox() {
+  const { x0, y0, x1, y1 } = DARKBOX;
+  const stretchW = x1 - x0 - 63, stretchH = y1 - y0 - 63;
+  ctx.fillStyle = "#000";
+  ctx.fillRect(x0 + 20, y0 + 20, x1 - x0 - 40, y1 - y0 - 40);
+  if (!img.darkboxTop || !img.darkboxLeft || !img.darkboxCorner) return;
+  ctx.drawImage(img.darkboxTop, x0 + 32, y0, stretchW, 32);
+  drawImageFlipped(img.darkboxTop, x0 + 32, y1 + 1 - 32, stretchW, 32, false, true);
+  ctx.drawImage(img.darkboxLeft, x0, y0 + 32, 32, stretchH);
+  drawImageFlipped(img.darkboxLeft, x1 + 1 - 32, y0 + 32, 32, stretchH, true, false);
+  const c = img.darkboxCorner;
+  ctx.drawImage(c, x0, y0, 32, 32);
+  drawImageFlipped(c, x1 + 1 - 32, y0, 32, 32, true, false);
+  drawImageFlipped(c, x0, y1 + 1 - 32, 32, 32, false, true);
+  drawImageFlipped(c, x1 + 1 - 32, y1 + 1 - 32, 32, 32, true, true);
+}
+function drawOfficialChoices(options) {
+  const centersX = [155, 487, 321, 327];
+  const centersY = [DARKBOX.y0 + 81, DARKBOX.y0 + 81, DARKBOX.y0 + 41, DARKBOX.y0 + 120];
+  for (let i = 0; i < options.length; i++) {
+    const width = textWidth(options[i]) * 2;
+    drawTextScaled(options[i], centersX[i] - width / 2, centersY[i] - 16,
+                   i === DLG.choiceSel ? "#ffff00" : "#fff", 2);
+  }
+  const width = textWidth(options[DLG.choiceSel]) * 2;
+  if (img.choiceHeart) ctx.drawImage(img.choiceHeart,
+    Math.round(centersX[DLG.choiceSel] - width / 2 - 22), Math.round(centersY[DLG.choiceSel] - 8), 18, 18);
+}
+function drawDialogueBox() {
+  if (!DLG.showing || !DLG.page) return;
+  const pivotX = (DARKBOX.x0 + DARKBOX.x1) / 2;
+  ctx.save();
+  ctx.translate(pivotX, DARKBOX.y1);
+  ctx.scale(DARKBOX_SCALE, DARKBOX_SCALE);
+  ctx.translate(-pivotX, -DARKBOX.y1);
+  drawOfficialDarkBox();
+  if (DLG.page.choices && !DLG.typing) {
+    drawOfficialChoices(DLG.page.choices);
+  } else {
+    const lines = wrapWords(fullText(), (DARKBOX.x1 - 58 - 20) / 2);
+    let left = DLG.pos - countPauses();
+    for (let i = 0; i < Math.min(3, lines.length); i++) {
+      if (left <= 0) break;
+      const line = lines[i];
+      drawTextScaled(left >= line.length ? line : line.slice(0, left), 58, DARKBOX.y0 + 28 + i * 36, "#fff", 2);
+      left -= line.length + 1;
+    }
+  }
+  ctx.restore();
+}
+
+/* ---------------- song list ----------------
+   Styled as a Deltarune menu: the same white-on-black box, the SOUL for a
+   cursor, and a window that scrolls when the list is taller than the screen. */
+const PICK = { rows: 7, rowH: 15, top: 0 };
+
+function drawPicker() {
+  if (!state.pickerOpen) return;
+  const n = pickerRows();
+  const bw = 244, bh = 27 + PICK.rows * PICK.rowH + 36;
+  const bx = Math.round((UW - bw) / 2), by = Math.round((UH - bh) / 2);
+  ctx.fillStyle = "rgba(0,0,0,0.55)";
+  ctx.fillRect(0, 0, UW, UH);
+  drBox(bx, by, bw, bh);
+  drawText("WHAT WILL KRIS PLAY?", bx + 16, by + 9, "#fff");
+
+  // keep the cursor inside the window
+  PICK.top = Math.max(0, Math.min(n - PICK.rows, Math.min(PICK.top, state.pickerSel - 1)));
+  if (state.pickerSel >= PICK.top + PICK.rows) PICK.top = state.pickerSel - PICK.rows + 1;
+  if (state.pickerSel < PICK.top) PICK.top = state.pickerSel;
+
+  for (let k = 0; k < PICK.rows; k++) {
+    const i = PICK.top + k;
+    if (i >= n) break;
+    const sel = i === state.pickerSel;
+    const y = by + 27 + k * PICK.rowH;
+    const col = sel ? "#ffe000" : "#fff";
+    if (i === FREE_PLAY_ROW) {
+      drawText("PLAY IT YOURSELF", bx + 30, y, col);
+      drawText("12 KEYS", bx + bw - 70, y, "#8c8c8c");
+    } else {
+      const song = SONGS[i - 1];
+      drawText(song.name, bx + 30, y, col);
+      const e = ENV[song.id];
+      if (e) drawText(fmtTime(e.dur), bx + bw - 58, y, "#8c8c8c");
+      const mark = song.id === SYNCED_SONG ? "+" : recordings[song.id] ? "R"
+                 : state.played[song.id] ? "*" : "";
+      if (mark) drawText(mark, bx + 20, y, sel ? "#ffe000" : "#8c8c8c");
+    }
+    if (sel) drawHeart(bx + 9, y + 3);
+  }
+  // scroll marks
+  if (PICK.top > 0) drawText("^", bx + bw - 22, by + 27, "#8c8c8c");
+  if (PICK.top + PICK.rows < n) drawText("v", bx + bw - 22, by + 27 + (PICK.rows - 1) * PICK.rowH, "#8c8c8c");
+
+  let sub;
+  if (state.pickerSel === FREE_PLAY_ROW) sub = "Kris plays what you play.";
+  else {
+    const song = SONGS[state.pickerSel - 1];
+    sub = song.id === SYNCED_SONG ? "The animation this sprite was drawn for."
+        : recordings[song.id] ? "Your recording."
+        : "Generated from the track.";
+  }
+  const fy = by + 27 + PICK.rows * PICK.rowH + 4;
+  drawText(sub, bx + 16, fy, "#8c8c8c");
+  drawText("Z  SELECT      X  BACK", bx + 16, fy + 14, "#8c8c8c");
+}
+
+function fmtTime(sec) {
+  const m = Math.floor(sec / 60), s = Math.floor(sec % 60);
+  return m + ":" + (s < 10 ? "0" : "") + s;
+}
+
+function pianoHintLine() {
+  if (REC.mode === 1) return "W  STOP RECORDING      ESC  GET UP";
+  if (state.freePlay)  return "ZXCVBN  LEFT   POIUYT  RIGHT   W  RECORD   ESC  UP";
+  if (isSyncedSong())  return "X  STAND      C  ANOTHER SONG      L  LOOP " + (settings.autoLoop ? "ON" : "OFF");
+  const rec = recordings[SONGS[state.songIdx].id] ? "   R  DROP" : "";
+  return "X  STAND   C  SONG   W  RECORD   L  LOOP " + (settings.autoLoop ? "ON" : "OFF") + rec;
+}
+
+// a small Deltarune-style panel: white border, black fill, white text
+function drawPanel(x, y, w, h) { drBox(x, y, w, h); }
+
+function drawHintBar(hint) {
+  const w = textWidth(hint) + 24;
+  drawPanel(8, UH - 26, w, 22);
+  drawText(hint, 20, UH - 20, "#fff");
+}
+
+// Twelve cells, one per hand position: the six the left hand can reach and the
+// six the right hand can, lit as the puppet puts a key down. It is the same
+// index the performance strings carry, drawn.
+function drawKeyStrip(x, y, w) {
+  const cells = 12, gap = 1;
+  const cw = Math.floor((w - gap * (cells - 1)) / cells);
+  const lCell = PUP.lDown ? 5 - PUP.l : -1;          // position 5 sits furthest left
+  const rCell = PUP.rDown ? 6 + PUP.r : -1;
+  for (let i = 0; i < cells; i++) {
+    const cx = x + i * (cw + gap);
+    const lit = i === lCell || i === rCell;
+    ctx.fillStyle = lit ? "#ffe000" : (i < 6 ? "#585858" : "#6e6e6e");
+    ctx.fillRect(cx, lit ? y - 1 : y, cw, lit ? 8 : 7);
+  }
+}
+
+function drawNowPlaying(title, right, prog, colour, keys) {
+  const w = 132, x = UW - w - 8, y = 8;
+  const h = keys ? 46 : 34;
+  drawPanel(x, y, w, h);
+  drawText(title, x + 11, y + 8, colour || "#fff");
+  if (right) drawText(right, x + w - 11 - textWidth(right), y + 8, "#8c8c8c");
+  if (prog >= 0) {
+    ctx.fillStyle = "#4a4a4a";
+    ctx.fillRect(x + 11, y + 23, w - 22, 3);
+    ctx.fillStyle = colour || "#ffe000";
+    ctx.fillRect(x + 11, y + 23, Math.round((w - 22) * Math.min(1, prog)), 3);
+  }
+  if (keys) drawKeyStrip(x + 11, y + (prog >= 0 ? 32 : 26), w - 22);
+}
+
+function drawHud() {
+  if (state.seated && state.freePlay) {
+    drawNowPlaying(REC.mode === 1 ? "RECORDING" : "FREE PLAY",
+                   REC.mode === 1 ? fmtTime(REC.frame / 30) : "",
+                   -1,
+                   REC.mode === 1 ? "#ff4040" : "#ffe000", true);
+    if (!state.pickerOpen && !DLG.showing) drawHintBar(pianoHintLine());
+    return;
+  }
+  if (state.seated && state.playing) {
+    const s = SONGS[state.songIdx];
+    const dur = (ENV[s.id] && ENV[s.id].dur) || 1;
+    const pos = songEl ? songEl.currentTime : 0;
+    drawNowPlaying(s.name, fmtTime(pos) + "/" + fmtTime(dur), pos / dur,
+                   REC.mode === 1 ? "#ff4040" : s.id === SYNCED_SONG ? "#ffe000" : "#8cd88c",
+                   usePuppet());
+    if (!state.pickerOpen && !DLG.showing) drawHintBar(pianoHintLine());
+  } else if (state.started && !state.seated && !DLG.showing && !state.pickerOpen && nearPiano()) {
+    drawHintBar("Z  SIT DOWN AT THE PIANO");
+  }
+}
+
+
+// glyph table from the game's fnt_main (8bitoperator JVE), inlined so the
+// prototype works straight from file:// without fetch()
+const GLYPH_CSV = `32;79;81;3;16;3;0
+33;73;81;4;13;6;1
+34;92;81;5;8;6;0
+35;60;2;7;13;8;0
+36;105;2;6;15;7;0
+37;51;2;7;13;8;0
+38;78;2;7;13;8;0
+39;119;81;2;8;3;0
+40;67;81;4;13;5;0
+41;55;81;4;13;5;0
+42;2;20;8;11;9;0
+43;98;66;6;11;7;0
+44;103;81;2;15;3;0
+45;41;81;6;9;7;0
+46;111;81;2;13;3;0
+47;20;20;6;14;7;0
+48;106;36;6;13;7;0
+49;74;36;6;13;7;0
+50;58;51;6;13;7;0
+51;108;20;6;13;7;0
+52;76;20;6;13;7;0
+53;66;36;6;13;7;0
+54;116;20;6;13;7;0
+55;26;36;6;13;7;0
+56;66;51;6;13;7;0
+57;26;51;6;13;7;0
+58;107;81;2;13;3;0
+59;99;81;2;15;3;0
+60;2;81;5;13;6;0
+61;33;81;6;10;7;0
+62;106;66;5;13;6;0
+63;114;51;6;13;7;0
+64;106;51;6;13;7;0
+65;2;36;6;13;7;0
+66;92;20;6;13;7;0
+67;34;36;6;13;7;0
+68;2;66;6;13;7;0
+69;34;66;6;13;7;0
+70;26;66;6;13;7;0
+71;100;20;6;13;7;0
+72;2;51;6;13;7;0
+73;36;20;6;13;7;0
+74;82;36;6;13;7;0
+75;98;36;6;13;7;0
+76;50;66;6;13;7;0
+77;87;2;7;13;8;0
+78;60;20;6;13;7;0
+79;18;51;6;13;7;0
+80;34;51;6;13;7;0
+81;113;2;6;15;7;0
+82;114;36;6;13;7;0
+83;42;66;6;13;7;0
+84;90;36;6;13;7;0
+85;42;51;6;13;7;0
+86;10;66;6;13;7;0
+87;42;2;7;13;8;0
+88;28;20;6;13;7;0
+89;18;66;6;13;7;0
+90;90;66;6;13;7;0
+91;61;81;4;13;5;0
+92;12;20;6;14;7;0
+93;49;81;4;13;5;0
+94;84;81;6;7;7;0
+95;9;81;4;16;5;0
+96;2;99;3;5;4;0
+97;10;51;6;13;7;0
+98;98;51;6;13;7;0
+99;68;20;6;13;7;0
+100;66;66;6;13;7;0
+101;42;36;6;13;7;0
+102;50;36;6;13;7;0
+103;2;2;6;16;7;0
+104;52;20;6;13;7;0
+105;74;51;6;13;7;0
+106;18;2;6;16;7;0
+107;82;66;6;13;7;0
+108;50;51;6;13;7;0
+109;69;2;7;13;8;0
+110;10;36;6;13;7;0
+111;44;20;6;13;7;0
+112;34;2;6;16;7;0
+113;26;2;6;16;7;0
+114;74;66;6;13;7;0
+115;90;51;6;13;7;0
+116;18;36;6;13;7;0
+117;58;66;6;13;7;0
+118;58;36;6;13;7;0
+119;96;2;7;13;8;0
+120;84;20;6;13;7;0
+121;10;2;6;16;7;0
+122;82;51;6;13;7;0
+123;120;66;5;13;6;0
+124;115;81;2;13;3;0
+125;113;66;5;13;6;0
+126;24;81;7;9;8;0
+127;15;81;7;9;8;0`;
+
+
+/* ---------------- title / settings ---------------- */
+const menuButtons = [];
+function addMenuBtn(x, y, w, action) { menuButtons.push({ x, y, w, h: 16, action }); }
+
+const SETTING_ROWS = () => [
+  { label: "WALK SPEED", value: () => settings.walkSpeed.toFixed(1),
+    dec: () => updateSetting(() => { settings.walkSpeed = Math.max(0.5, +(settings.walkSpeed - 0.1).toFixed(1)); }),
+    inc: () => updateSetting(() => { settings.walkSpeed = Math.min(4, +(settings.walkSpeed + 0.1).toFixed(1)); }) },
+  { label: "WALK CODE", value: () => WALK_MODES[settings.walkMode].name,
+    dec: () => updateSetting(() => { settings.walkMode = (settings.walkMode + 1) % WALK_MODES.length; }),
+    inc: () => updateSetting(() => { settings.walkMode = (settings.walkMode + 1) % WALK_MODES.length; }) },
+  { label: "ANIMATION", value: () => ANIM_MODES[settings.animMode].name,
+    dec: () => updateSetting(() => { settings.animMode = (settings.animMode + ANIM_MODES.length - 1) % ANIM_MODES.length; }),
+    inc: () => updateSetting(() => { settings.animMode = (settings.animMode + 1) % ANIM_MODES.length; }) },
+  { label: "PIANO KRIS", value: () => PALETTES[settings.palette].name,
+    dec: () => updateSetting(() => { settings.palette = (settings.palette + PALETTES.length - 1) % PALETTES.length; }),
+    inc: () => updateSetting(() => { settings.palette = (settings.palette + 1) % PALETTES.length; }) },
+  { label: "LOOP SONGS", value: () => settings.autoLoop ? "ON" : "OFF",
+    dec: () => updateSetting(() => { settings.autoLoop = !settings.autoLoop; }),
+    inc: () => updateSetting(() => { settings.autoLoop = !settings.autoLoop; }) }
+];
+
+function centreText(str, y, colour) { drawText(str, Math.round((UW - textWidth(str)) / 2), y, colour); }
+
+function drawTitle() {
+  if (state.started) return;
+  menuButtons.length = 0;
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0, 0, UW, UH);
+
+  if (state.menu === "title") {
+    if (img.logo) ctx.drawImage(img.logo, Math.round((UW - 130) / 2), 16, 130, 29);
+    // spr_kris_piano_full, looping at its own rate, as the hero image
+    const sheet = pal("pianoFull");
+    if (sheet) {
+      const c = PIANO_SHEET.cell;
+      const f = Math.floor(Date.now() / 80) % PIANO_SHEET.frames;
+      ctx.drawImage(sheet, (f % PIANO_SHEET.cols) * c, Math.floor(f / PIANO_SHEET.cols) * c, c, c,
+                    Math.round((UW - c) / 2), 50, c, c);
+    }
+    centreText("KRIS AT THE PIANO", 108, "#fff");
+    centreText("room_lw_noellehouse_kitchen", 124, "#8c8c8c");
+    centreText("obj_ch4_DCA09_piano  /  obj_kris_pianopuppet", 136, "#8c8c8c");
+    if ((Math.floor(Date.now() / 400) % 2) === 0) centreText("PRESS Z TO BEGIN", 150, "#ffe000");
+    centreText("B  SETTINGS", 164, "#8c8c8c");
+  } else {
+    const rows = SETTING_ROWS();
+    const bw = 268, bh = 28 + rows.length * 18 + 51;
+    const bx = Math.round((UW - bw) / 2), by = Math.round((UH - bh) / 2);
+    drBox(bx, by, bw, bh);
+    drawText("SETTINGS", bx + 16, by + 9, "#fff");
+    for (let i = 0; i < rows.length; i++) {
+      const sel = i === state.menuSel;
+      const y = by + 28 + i * 18;
+      drawText(rows[i].label, bx + 28, y, sel ? "#ffe000" : "#fff");
+      if (sel) drawHeart(bx + 12, y + 3);
+      const v = rows[i].value();
+      const vx = bx + bw - 30 - textWidth(v);
+      drawText(v, vx, y, "#fff");
+      drawText("<", vx - 14, y, sel ? "#ffe000" : "#4a4a4a");
+      drawText(">", bx + bw - 22, y, sel ? "#ffe000" : "#4a4a4a");
+      addMenuBtn(vx - 16, y - 2, 12, rows[i].dec);
+      addMenuBtn(bx + bw - 24, y - 2, 12, rows[i].inc);
+    }
+    const hy = by + 26 + rows.length * 18;
+    drawText(ANIM_MODES[settings.animMode].hint, bx + 16, hy, "#8c8c8c");
+    drawText("LOWER always keeps its own sprite.", bx + 16, hy + 12, "#8c8c8c");
+    const sel = state.menuSel === rows.length;
+    drawText("BACK", bx + 30, hy + 28, sel ? "#ffe000" : "#fff");
+    if (sel) drawHeart(bx + 14, hy + 31);
+    addMenuBtn(bx + 26, hy + 26, 40, () => { state.menu = "title"; state.menuSel = 0; });
+  }
+}
+
+function pressedAnyMenuKey() {
+  for (const n of ["z", "enter", " ", "b", "arrowup", "arrowdown", "arrowleft", "arrowright",
+                   "w", "a", "s", "d", "escape", "backspace"]) {
+    if (pressed(n)) return n;
+  }
+  return null;
+}
+function handleMenuKeys() {
+  if (state.started) return;
+  const k = pressedAnyMenuKey();
+  if (!k) return;
+  if (state.menu === "title") {
+    if (k === "z" || k === "enter" || k === " ") startGame();
+    else if (k === "b") { state.menu = "settings"; state.menuSel = 0; playSound(cursorEl, 0.5); }
+    return;
+  }
+  const rows = SETTING_ROWS();
+  const n = rows.length + 1;
+  if (k === "arrowup" || k === "w") { state.menuSel = (state.menuSel + n - 1) % n; playSound(cursorEl, 0.5); }
+  else if (k === "arrowdown" || k === "s") { state.menuSel = (state.menuSel + 1) % n; playSound(cursorEl, 0.5); }
+  else if (state.menuSel < rows.length && (k === "arrowleft" || k === "a")) { rows[state.menuSel].dec(); playSound(cursorEl, 0.5); }
+  else if (state.menuSel < rows.length && (k === "arrowright" || k === "d" || k === "z" || k === "enter" || k === " ")) { rows[state.menuSel].inc(); playSound(cursorEl, 0.5); }
+  else if (k === "escape" || k === "backspace" || (state.menuSel === rows.length && (k === "z" || k === "enter" || k === " "))) {
+    state.menu = "title"; state.menuSel = 0; playSound(cursorEl, 0.5);
+  }
+}
+function handleMenuClick(mx, my) {
+  if (state.started) return;
+  if (state.menu === "title") { startGame(); return; }
+  for (const b of menuButtons) {
+    if (mx >= b.x && mx <= b.x + b.w && my >= b.y - 4 && my <= b.y + b.h + 4) {
+      playSound(cursorEl, 0.5); b.action(); return;
+    }
+  }
+}
+
+function startGame() {
+  state.started = true;
+  state.fade = 1;
+  KRIS.x = 435; KRIS.y = 186; KRIS.dir = "d";
+  DT.facing = 0; DT.idleLast = true;
+  DT.walktimer = 0; DT.walkbuffer = 0; DT.runtimer = 0;
+  updateCamera(true);
+  roomMusic(true);
+}
+function exitToMenu() {
+  stopSong(false);
+  roomMusic(false);
+  state.started = false; state.seated = false; state.pickerOpen = false;
+  state.menu = "title"; state.menuSel = 0;
+  DLG.queue.length = 0; DLG.showing = false; DLG.page = null;
+  for (const k of Object.keys(keys)) keys[k] = false;
+  clearPressed();
+}
+
+/* ---------------- main loop ---------------- */
+let lastT = 0, speedScale = 1;
+function frame(ts) {
+  if (ts > 0) {
+    speedScale = lastT > 0 ? Math.min(3, Math.max(0.1, ((ts - lastT) / 1000) * 60)) : 1;
+    lastT = ts;
+  }
+  if (!state.started) handleMenuKeys();
+  else {
+    if (state.pickerOpen) handlePicker();
+    else {
+      handleSeated();
+      handleInteract();
+      updatePlayer();
+      updateDialogue();
+    }
+    updatePiano();
+    updateCamera(false);
+  }
+
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.save();
+  ctx.scale(RENDER_SCALE, RENDER_SCALE);
+  if (state.started) {
+    ctx.save();
+    const z = ROOM_SCALE * CAMERA.zoom;
+    ctx.scale(z, z);
+    ctx.translate(-CAMERA.x, -CAMERA.y);
+    drawRoom();
+    ctx.restore();
+    drawRoomDim();
+    ctx.save();
+    ctx.scale(UI_SCALE, UI_SCALE);
+    drawHud();
+    drawPicker();
+    ctx.restore();
+    // Dialogue has its own native scale; do not apply the HUD/menu 2x scale.
+    drawDialogueBox();
+  }
+  ctx.save();
+  ctx.scale(UI_SCALE, UI_SCALE);
+  drawTitle();
+  ctx.restore();
+  if (state.fade > 0) {
+    ctx.fillStyle = "rgba(0,0,0," + state.fade + ")";
+    ctx.fillRect(0, 0, W, H);
+    state.fade = Math.max(0, state.fade - 0.02 * speedScale);
+  }
+  ctx.restore();
+  clearPressed();
+  requestAnimationFrame(frame);
+}
+
+/* ---------------- boot ---------------- */
+function loadImage(src) {
+  return new Promise((res, rej) => {
+    const im = new Image();
+    im.onload = () => res(im);
+    im.onerror = () => rej(new Error("failed to load " + src));
+    im.src = src;
+  });
+}
+
+async function boot() {
+  loadSettings();
+  for (const dir of ["d", "u", "l", "r"]) {
+    for (let i = 0; i < 4; i++) krisWalk[dir].push(await loadImage("assets/kris/" + dir + "_" + i + ".png"));
+  }
+  img.roomBg    = await loadImage(ASSETS.roomBg);
+  img.piano     = await loadImage(ASSETS.piano);
+  img.keys      = await loadImage(ASSETS.keys);
+  img.bench     = await loadImage(ASSETS.bench);
+  img.tree      = await loadImage(ASSETS.tree);
+  img.door      = await loadImage(ASSETS.door);
+  for (const k of ["pianoFull", "pianoFullLw", "puppetBody", "puppetBodyLw",
+                   "puppetLarm", "puppetLarmLw", "puppetRarm", "puppetRarmLw"]) {
+    img[k] = await loadImage(ASSETS[k]);
+  }
+  img.heart     = await loadImage(ASSETS.heart);
+  img.logo      = await loadImage(ASSETS.logo);
+  img.font      = await loadImage(ASSETS.font);
+  img.darkboxTop    = await loadImage(DARKBOX_ASSETS.top);
+  img.darkboxLeft   = await loadImage(DARKBOX_ASSETS.left);
+  img.darkboxCorner = await loadImage(DARKBOX_ASSETS.corner);
+  img.choiceHeart   = await loadImage(DARKBOX_ASSETS.heart);
+  parseFontCsv(GLYPH_CSV);
+
+  roomMusEl   = makeEl(ASSETS.roomMus, true);
+  blipEl      = makeEl(ASSETS.blip, false);
+  cursorEl    = makeEl(ASSETS.cursor, false);
+  doorOpenEl  = makeEl(ASSETS.doorOpen, false);
+  doorCloseEl = makeEl(ASSETS.doorClose, false);
+  noteEl      = makeEl(ASSETS.note, false);
+  loadRecordings();
+
+  window.addEventListener("keydown", () => {
+    if (state.started && roomMusEl && roomMusEl.paused && !state.playing) roomMusEl.play().catch(() => {});
+  }, { once: true });
+
+  canvas.addEventListener("click", e => {
+    const r = canvas.getBoundingClientRect();
+    const sc = RENDER_SCALE * UI_SCALE;
+    handleMenuClick((e.clientX - r.left) * (canvas.width / r.width) / sc,
+                    (e.clientY - r.top) * (canvas.height / r.height) / sc);
+  });
+
+  // Q returns to the title from anywhere in the room
+  window.addEventListener("keydown", e => {
+    if (state.started && e.key.toLowerCase() === "q") exitToMenu();
+  });
+
+  applyDebugQuery();
+  requestAnimationFrame(frame);
+}
+
+// Screenshot/debug hook: index.html?auto=1&x=551&y=186&seat=0&mute=1 drops
+// straight into the room (and optionally onto the bench) without any input.
+function applyDebugQuery() {
+  const q = new URLSearchParams(location.search);
+  if (!q.has("auto") && !q.has("seat")) return;
+  startGame();
+  state.fade = 0;
+  if (q.has("x")) KRIS.x = +q.get("x");
+  if (q.has("y")) KRIS.y = +q.get("y");
+  if (q.has("mute")) { roomMusic(false); }
+  if (q.has("seat")) {
+    const idx = Math.max(0, Math.min(SONGS.length - 1, +q.get("seat") || 0));
+    state.seated = true;
+    state.songIdx = idx;
+    state.played[SONGS[idx].id] = true;
+    if (q.has("mute")) {
+      state.playing = false;
+      state.frame = +(q.get("frame") || 0);
+    } else {
+      sitDown(idx);
+    }
+  }
+  if (q.has("free")) { sitDownFreePlay(); }
+  // pt=<seconds> poses the puppet from the song's performance, for stills
+  if (q.has("pt")) {
+    const perf = performanceFor(SONGS[state.songIdx].id);
+    if (perf) applyPerformance(perf, +q.get("pt"));
+  }
+  if (q.has("rec")) { REC.mode = 1; REC.frame = +(q.get("rec") || 0); }
+  if (q.has("picker")) { state.pickerOpen = true; state.pickerSel = +(q.get("picker") || 0); }
+  if (q.has("say")) { pianoInteract(); DLG.typing = false; DLG.pos = DLG.page.text.length;
+                      if (+q.get("say") > 0) { dDone(); DLG.typing = false; DLG.pos = DLG.page.text.length; } }
+  if (q.has("menu")) { state.started = false; state.menu = "settings"; state.menuSel = +(q.get("menu") || 0); }
+  updateCamera(true);
+}
+
+boot().catch(err => {
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = "#fff";
+  ctx.font = "16px monospace";
+  ctx.fillText("Failed to load: " + err.message, 20, 40);
+});
+</script>
+</body>
+</html>
