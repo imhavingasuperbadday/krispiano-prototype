@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Kris at the Piano</title>
+<title>Kris Piano Songs</title>
 <style>
   html,body { margin:0; padding:0; background:#000; height:100%; overflow:hidden;
               display:flex; align-items:center; justify-content:center; }
@@ -12,22 +12,21 @@
 </head>
 <body>
 <script src="assets/performances.js"></script>
-<canvas id="game" width="854" height="480" role="img" aria-label="Kris at the piano in Noelle's house, a playable pixel-art scene"></canvas>
+<canvas id="game" width="854" height="480" role="img" aria-label="Kris at a grand piano on a black stage, a playable pixel-art scene"></canvas>
 <script>
 "use strict";
 /* ============================================================
    DELTARUNE - KRIS AT THE PIANO (playable prototype)
 
-   Room:   room_lw_noellehouse_kitchen (chapter 4) - the Holiday
-           dining room, rebuilt from bg_noellehouse_kitchen plus the
-           separate tree / piano / bench / chair sprites the room
-           layers on top of it.
+   Stage:  no room at all. The piano stands alone, centred on black, the
+           way the "Kris Piano Songs" title card frames it. Kris walks that
+           black stage and starts to the left of the piano.
    Piano:  obj_ch4_DCA09_piano (chapter 4). Its Create/Step events
            drive spr_kris_piano_full (525 frames) straight off the
            playback position of the song, which is the sync used here.
    Songs:  every mus/kris_piano_*.ogg track in the decompile.
-   Engine: movement, dialogue box and bitmap font ported from the
-           Egg Room prototype (obj_mainchara/Step_0.gml port).
+   Engine: movement and bitmap font ported from the Egg Room prototype
+           (obj_mainchara/Step_0.gml port). No dialogue box, no room music.
    ============================================================ */
 
 const W = 640, H = 360;              // internal view, in room pixels * ROOM_SCALE
@@ -37,39 +36,35 @@ const canvas = document.getElementById("game");
 const ctx = canvas.getContext("2d");
 ctx.imageSmoothingEnabled = false;
 
-/* ---------------- room geometry (all values in ROOM pixels) ----------------
-   bg_noellehouse_kitchen is 640x240. Its opaque area is x 40..607, y 8..199,
-   with the exit corridor at x 80..119 continuing down to y 239.            */
-const ROOM_W = 640, ROOM_H = 240;
-const WORLD_W = ROOM_W * ROOM_SCALE, WORLD_H = ROOM_H * ROOM_SCALE;
+/* ---------------- stage geometry (all values in ROOM pixels) ----------------
+   The room is gone. What is left is the piano group on a black stage the size
+   of exactly one screen at ROOM_SCALE 2, so the camera never has to move and
+   the sprites keep their native pixel size - the framing of the title card. */
+const ROOM_W = W / ROOM_SCALE, ROOM_H = H / ROOM_SCALE;   // 320 x 180
+const WORLD_W = W, WORLD_H = H;
 
-const FLOOR_TOP = 82;                // baseboard line sits at y 79
-const FLOOR_BOT = 198;
-const FLOOR_L = 46, FLOOR_R = 602;
-const HALL = { x0: 84, x1: 116, y1: 236 };   // the corridor out of the room
-
-// props layered over the background (position = top-left, in room pixels)
-const TREE  = { x: 478, y: 4 };      // spr_noellehouse_kitchen_tree   90x134
-const PIANO = { x: 508, y: 74 };     // spr_noellehouse_kitchen_piano  89x95
-const BENCH = { x: 528, y: 157 };    // spr_noellehouse_kitchen_piano_seat 46x19
+// spr_noellehouse_kitchen_piano is 89x95 and its seat 46x19; together they are
+// 89x102, centred here on the 320x180 stage.
+const PIANO = { x: 115, y: 39 };
+const BENCH = { x: PIANO.x + 20, y: PIANO.y + 83 };
 const KEYS  = { x: PIANO.x + 8, y: PIANO.y + 67, w: 72, h: 6 };  // keyboard band
-const DOOR  = { x: 567, y: 25, w: 33, h: 54 };
+
+// Kris may walk the whole stage; only the piano itself stops him.
+const FLOOR_TOP = 24;
+const FLOOR_BOT = 176;
+const FLOOR_L = 14, FLOOR_R = 306;
 
 // where Kris sits: spr_kris_piano_full is 52x52 with the head at y16..32,
 // the hands at y33..40 and the seat at y40..46, so the hands land on the keys.
-const SEAT = { x: 525, y: 110 };
+const SEAT = { x: PIANO.x + 17, y: PIANO.y + 36 };
 // where Kris stands to reach the piano
-const PIANO_SPOT = { x: 551, y: 186 };
+const PIANO_SPOT = { x: PIANO.x + 43, y: PIANO.y + 112 };
+// where he starts, and where the scene opens: to the left of the piano
+const START_SPOT = { x: PIANO.x - 44, y: PIANO.y + 88, dir: "r" };
 
 // solid rectangles, tested against Kris's feet
 const SOLIDS = [
-  { x:  58, y:  40, w: 150, h:  59, name: "counter" },   // fridge / stove / microwave run
-  { x: 238, y:  40, w:  30, h: 134, name: "counter" },   // the counter's tall arm
-  { x: 140, y: 136, w: 128, h:  38, name: "counter" },   // the counter's low arm
-  { x:  38, y: 130, w:  44, h:  38, name: "counter" },   // small counter, far left
-  { x: 300, y:  90, w: 148, h:  88, name: "table" },     // dining table + its chairs
-  { x: 486, y: 104, w:  76, h:  36, name: "tree" },      // the tree's stand
-  { x: 508, y: 100, w:  90, h:  74, name: "piano" }      // piano body + bench
+  { x: PIANO.x, y: PIANO.y + 26, w: 90, h: 74, name: "piano" }   // body + bench
 ];
 
 const CAMERA = { x: 0, y: 0, tx: 0, ty: 0, zoom: 1 };
@@ -77,27 +72,6 @@ const CAMERA = { x: 0, y: 0, tx: 0, ty: 0, zoom: 1 };
 /* ---------------- UI metrics ---------------- */
 const UI_SCALE = 2;
 const UW = W / UI_SCALE, UH = H / UI_SCALE;   // 320 x 180
-// The original Deltarune dark-world dialog footprint, laid out directly at the
-// size it is drawn. The border tiles are pixel art, so the box is never scaled
-// by a fraction - everything below lands on whole canvas pixels.
-const DARKBOX = { x0: 26, y0: H - 142, x1: W - 26, y1: H - 14 };
-// obj_writer text metrics: 2x font, one bullet column, three visible lines.
-const DLG_TEXT = { x: 26 + 34, y: H - 142 + 30, line: 32, scale: 2, indent: 24 };
-// Original Chapter 5 dark-world textbox tiles, carried over from EggRoom.
-const DARKBOX_ASSETS = {
-  top: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAQCAYAAADXnxW3AAAAI0lEQVQI12NwcPjPwMTAwIBEMPz///8/hDtv8VGICJoSnAQA5xoIm0HpxWAAAAAASUVORK5CYII=",
-  left: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAABCAYAAADXeS5fAAAAIUlEQVQI12N0cPjPgAz272f4z8DAwDBv8VGG5DgbBkIAAENIBwFpkGobAAAAAElFTkSuQmCC",
-  heart: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAkAAAAJCAYAAADgkQYQAAAAQklEQVQY052OQQ7AMAjD7P3/z+llRROjOywXRDBRBAgEQPDeawia8krSvIu3+tMI8QvaRfMB6KNIJqCSJtB24wRuLcbxEAeaqec6AAAAAElFTkSuQmCC",
-  corner: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAtElEQVQ4y6WSSw6EIBBEqydzK13QB8EFnksXehA3eK6azWCwFSSxEqKg/aj+iHNETdsGqkJK3z9okA87XwFqkG/Jdr4PvsO87mgGqEISJA+04EsK+Q+qEFVI8F01tYuDVPW76t+m4RyPxb/ys2mJBED7TEtI0t6SbNsbg+8gch4JcY5Hi2y1x6EHAExLPN6tJE1ibVhKwSeA7cS87hiHHiQvtotttJqWWA1+BNSsNwFa9BrwA8KwaRp1iDVNAAAAAElFTkSuQmCC"
-};
-
-// obj_dialoguer/Draw_0.gml: white sprite, then black inset by 3
-function drBox(x, y, w, h) {
-  ctx.fillStyle = "#ffffff";
-  ctx.fillRect(x, y, w, h);
-  ctx.fillStyle = "#000000";
-  ctx.fillRect(x + 3, y + 3, w - 6, h - 6);
-}
 function roundRect(c, x, y, w, h, r) {
   c.beginPath();
   c.moveTo(x + r, y);
@@ -118,18 +92,10 @@ function drawSoul(x, y, s) {
   ctx.closePath();
   ctx.fill();
 }
-function drawHeart(x, y) {
-  if (img.heart) ctx.drawImage(img.heart, Math.round(x), Math.round(y));
-}
-
 /* ---------------- assets ---------------- */
 const ASSETS = {
-  roomBg:   "assets/room_bg.png",
   piano:    "assets/piano.png",
-  keys:     "assets/piano_keys.png",
   bench:    "assets/piano_seat.png",
-  tree:     "assets/tree.png",
-  door:     "assets/door_closed.png",
   pianoFull:   "assets/piano_full.png",     // spr_kris_piano_full, as decompiled
   pianoFullLw: "assets/piano_full_lw.png",  // ...recoloured to Kris's light-world palette
   puppetBody:   "assets/puppet_body.png",   // spr_kris_pianopuppet_body  (1 frame)
@@ -141,11 +107,7 @@ const ASSETS = {
   note:     "assets/sfx/krispiano.wav",     // snd_krispiano, one note, pitched per key
   font:     "assets/fnt_main.png",
   heart:    "assets/heart.png",           // spr_heartsmall, the menu SOUL
-  roomMus:  "assets/mus/room_noelle_house.ogg",
-  blip:     "assets/sfx/blip.wav",
-  cursor:   "assets/sfx/cursor.wav",
-  doorOpen: "assets/sfx/dooropen.wav",
-  doorClose:"assets/sfx/doorclose.wav"
+  cursor:   "assets/sfx/cursor.wav"
 };
 
 const PIANO_SHEET = { cell: 52, cols: 25, frames: 525 };
@@ -259,7 +221,7 @@ function updateSetting(change) { change(); saveSettings(); }
 const img = {};
 const krisWalk = { d: [], u: [], l: [], r: [] };
 const glyphs = {};
-let roomMusEl, blipEl, cursorEl, doorOpenEl, doorCloseEl, noteEl;
+let cursorEl, noteEl;
 let songEl = null;                 // the piano track currently playing
 
 // live puppet pose, mirroring the tool's baselindex / baserindex / keydown
@@ -300,116 +262,6 @@ const ENV = {
   "kris_piano_waitingroom": { dur: 94.394, env: "0ADkcELAAt>%MxhpvivCpbmBqvoVRABgbeIIIHqjPVOKzsowniWVSQBvxqtXotCamniBPwzhbqIsvAXxn73OCa8vKtrod!yzyNJAtu$Rxe&XJANDqttlcgBXHzCunoomdyfaDmctm8xl9zZyjtRAyrPlg7ImNAym96HHCAAutp620Y)UCtmNJLEvlOH92$Okeq*NKBP~MJgohbZ(PRRoeIQFtCpxhbkWfCub9KDztPXBoheFmKNwcLPDtJLnjsgedvaw&PGwtnmwugmqefsaGi77PRFje(wotWm_%QIwiwGwwqgstkrmsNwm!Iytt#ttpdD&mD)IyGmlApOSiNOxO@TDskAYIzDskiY@OslkhPt97NCEFtxpnws$RBsRBQNnfKvQHPz#SFhaRXEzBGyHCEA%VysoSGAzIHJLKIOGRAbqPIJBtstwItpylgff[WEdNAHznpGtnKLC&OFDHKWHRMQIADIV%QIA&PGGAxHLUTuqWQFAFCPCJEvuztsPAKDzCPIWFDAIHzxu%PAtEAt^;NRWEFunljRDAsmlik&JumNRFknslOhMqIeCg65SHCAOxlMq5HTPFvoELEJzvDPtk[^(RCtvtu:VXNmGHC@PEPDtISxkxR9CgMAIj9a74IIBtsylqnIwHqFUIAUTIEIQqjttniu9B!IArvqxycme7yft&HCuIEvrMonm?!NEEEApoLytvEtzzqmqq(TFoNMDxIvW>YCIQ#QztrOAtZLsvyxOzAWtsu!CtuWDEzMwZAvtyxJxQGJLFzAqnOLxLJzyysVPAPyCSyxCAuJIAA@=KuzCsnVYxotF94LQvHCQEyzRW*U!Cwk7H(MHEKxKQGDw(PFtFzGA!$HAuyvtr$Nytpmijihlhf5000000000000000000000000000000000000000000000000000000000000" }
 };
 
-/* ---------------- dialogue engine (ported from the Egg Room prototype) ---------------- */
-const DLG = {
-  queue: [], pos: 0, showing: false, typing: true,
-  choice: -1, choiceSel: 0, timer: 0, pause: 0, page: null, onDone: null
-};
-function stripGameCodes(s) {
-  return s.replace(/\[A-Z][0-9]*/g, "").replace(/\[a-z0-9]/g, "");
-}
-function pushPage(text, opts = {}) {
-  DLG.queue.push({
-    text: stripGameCodes(text).replace(/[\/%]+$/, ""),
-    choices: opts.choices || null, slow: !!opts.slow, onDone: opts.onDone || null
-  });
-}
-function pushChoice(msg, options, onDone) { pushPage(msg, { choices: options, onDone }); }
-function dMake() {
-  if (DLG.queue.length === 0) return;
-  const p = DLG.queue.shift();
-  DLG.page = p; DLG.pos = 0; DLG.typing = true; DLG.choice = -1;
-  DLG.choiceSel = 0; DLG.timer = 0; DLG.pause = 0; DLG.showing = true; DLG.onDone = p.onDone;
-}
-function dDone() {
-  if (!DLG.showing) return;
-  if (DLG.typing) { DLG.typing = false; DLG.pos = DLG.page.text.length; return; }
-  if (DLG.page.choices && DLG.choice === -1) return;
-  DLG.showing = false;
-  const cb = DLG.onDone; DLG.onDone = null;
-  if (cb) cb();
-  if (DLG.queue.length > 0) dMake();
-}
-function startDialogue() { DLG.showing = true; dMake(); }
-
-function handleChoiceInput() {
-  if (!DLG.showing || !DLG.page.choices || DLG.choice !== -1) return;
-  if (DLG.typing) return;              // Z while typing only finishes the text
-  const c = DLG.page.choices;
-  if (anyKey(["arrowup", "w", "arrowdown", "s", "arrowleft", "a", "arrowright", "d"])) {
-    DLG.choiceSel = (DLG.choiceSel + 1) % c.length;
-    playSound(cursorEl, 0.6);
-  }
-  if (anyKey(["z", "enter", " "])) {
-    playSound(cursorEl, 0.6);
-    DLG.choice = DLG.choiceSel;
-    dDone();
-  }
-}
-function updateDialogue() {
-  if (!DLG.showing) return;
-  handleChoiceInput();
-  if (DLG.page.choices && DLG.choice === -1 && !DLG.typing) return;
-  if (anyKey(["z", "enter", " "])) { dDone(); return; }
-  if (DLG.typing) {
-    if (DLG.pause > 0) { DLG.pause -= speedScale; return; }
-    const speed = DLG.page.slow ? 0.45 : 0.9;
-    DLG.timer += speed * speedScale;
-    while (DLG.timer >= 1 && DLG.pos < DLG.page.text.length) {
-      const ch = DLG.page.text[DLG.pos];
-      if (ch === "^" && DLG.page.text[DLG.pos + 1] === "1") {
-        DLG.pos += 2; DLG.timer = 0; DLG.pause = 30; break;
-      }
-      DLG.pos++; DLG.timer -= 1;
-      if (ch !== " ") playSound(blipEl, 0.18);
-    }
-    if (DLG.pos >= DLG.page.text.length) DLG.typing = false;
-  }
-}
-// the page text with the ^1 pause markers taken out
-function fullText() {
-  const t = DLG.page.text;
-  let out = "";
-  for (let i = 0; i < t.length; i++) {
-    if (t[i] === "^" && t[i + 1] === "1") { i++; continue; }
-    out += t[i];
-  }
-  return out;
-}
-// how many pause markers the reveal cursor has already passed
-function countPauses() {
-  const t = DLG.page.text;
-  let n = 0;
-  for (let i = 0; i < DLG.pos && i < t.length; i++) {
-    if (t[i] === "^" && t[i + 1] === "1") { n += 2; i++; }
-  }
-  return n;
-}
-// Deltarune hangs wrapped lines under the text, not under the "* " bullet, so
-// continuation lines get a narrower budget and are drawn indented.
-function wrapWords(text, maxW, indentW = 0) {
-  const lines = [];
-  let line = "";
-  for (const word of text.split(" ")) {
-    const test = line.length ? line + " " + word : word;
-    const budget = lines.length ? maxW - indentW : maxW;
-    if (textWidth(test) > budget && line.length) { lines.push(line); line = word; }
-    else line = test;
-  }
-  lines.push(line);
-  return lines;
-}
-
-function visibleText() {
-  const t = DLG.page.text;
-  let out = "";
-  for (let i = 0; i < DLG.pos; i++) {
-    if (t[i] === "^" && t[i + 1] === "1") { i++; continue; }
-    out += t[i];
-  }
-  return out;
-}
-
 /* ---------------- input ---------------- */
 const keys = {};
 const PRESSED = {};
@@ -437,12 +289,6 @@ function playSound(el, vol) {
   c.volume = vol === undefined ? 0.9 : vol;
   c.play().catch(() => {});
 }
-function roomMusic(on) {
-  if (!roomMusEl) return;
-  if (on) { roomMusEl.volume = 0.45; roomMusEl.play().catch(() => {}); }
-  else { roomMusEl.pause(); }
-}
-
 /* ---------------- font ---------------- */
 function parseFontCsv(text) {
   for (const line of text.split(/\r?\n/)) {
@@ -504,9 +350,7 @@ function drawTextScaled(str, x, y, color = "#fff", scale = 1) {
 
 /* ---------------- collision ---------------- */
 function onFloor(x, y) {
-  const inRoom = x >= FLOOR_L && x <= FLOOR_R && y >= FLOOR_TOP && y <= FLOOR_BOT;
-  const inHall = x >= HALL.x0 && x <= HALL.x1 && y >= FLOOR_TOP && y <= HALL.y1;
-  return inRoom || inHall;
+  return x >= FLOOR_L && x <= FLOOR_R && y >= FLOOR_TOP && y <= FLOOR_BOT;
 }
 function roomCollides(x, y) {
   if (!onFloor(x, y)) return true;
@@ -530,7 +374,7 @@ function updatePlayer() {
 }
 
 function updatePlayerClassic() {
-  if (DLG.showing || state.seated) { KRIS.moving = false; return; }
+  if (state.seated) { KRIS.moving = false; return; }
   let mx = 0, my = 0;
   if (held("arrowleft") || held("a")) mx -= 1;
   if (held("arrowright") || held("d")) mx += 1;
@@ -548,7 +392,7 @@ function updatePlayerClassic() {
 }
 
 function updatePlayerDT() {
-  if (DLG.showing || state.seated) { KRIS.moving = false; return; }
+  if (state.seated) { KRIS.moving = false; return; }
   const nowx = KRIS.x, nowy = KRIS.y;
   const press_l = (held("arrowleft")  || held("a")) ? 1 : 0;
   const press_r = (held("arrowright") || held("d")) ? 1 : 0;
@@ -639,55 +483,12 @@ function updatePlayerDT() {
 }
 
 /* ---------------- camera ----------------
-   obj_mainchara/Step_2.gml, light-world branch. There is no smoothing at all:
-   every step the view is *assigned* the player's position and then clamped to
-   the room.
-
-       wd = (x - floor(view_w / 2)) + 11;
-       ht = (y - floor(view_h / 2)) + 17;
-
-   x,y there are the sprite's top-left corner, so +11/+17 lands on Kris's
-   middle. This prototype tracks Kris by his feet, hence the conversion below.
-   The result is rigid and pixel-snapped, which is how the game reads.
-
-   The one place Deltarune does ease the camera is a cutscene move
-   (obj_camera_advanced, panStyle 1 = lerp toward a target). Sitting down at
-   the piano is exactly that, so the push-in eases and nothing else does.     */
-const ROOM_L = 40, ROOM_R = 607, ROOM_T = 8, ROOM_B = 199;
-const ZOOM_WALK = 1, ZOOM_PLAY = 1.32;
-const CAM_KRIS_DX = 11 - 9.5;    // sprite-left -> feet-centre, then the game's +11
-const CAM_KRIS_DY = 17 - 38;     // sprite-top  -> feet,        then the game's +17
-
-function camView() {
-  return { w: W / (ROOM_SCALE * CAMERA.zoom), h: H / (ROOM_SCALE * CAMERA.zoom) };
-}
-function updateCamera(snap) {
-  const wantZoom = state.seated ? ZOOM_PLAY : ZOOM_WALK;
-  if (snap) CAMERA.zoom = wantZoom;
-  else CAMERA.zoom += (wantZoom - CAMERA.zoom) * (1 - Math.pow(0.93, speedScale));
-
-  const v = camView();
-  const bottom = KRIS.y > FLOOR_BOT - 4 ? HALL.y1 : ROOM_B;
-  const clamp = (val, lo, hi) => (lo > hi ? Math.round((lo + hi) / 2) : Math.max(lo, Math.min(hi, val)));
-
-  // The pan is still running while the zoom settles, so getting up eases back
-  // out before the rigid follow takes over again.
-  if (state.seated || CAMERA.zoom > ZOOM_WALK + 0.005) {
-    const fx = state.seated ? KEYS.x + KEYS.w / 2 : KRIS.x + CAM_KRIS_DX;
-    const fy = state.seated ? PIANO.y + 60 : KRIS.y + CAM_KRIS_DY;
-    CAMERA.tx = clamp(fx - v.w / 2, ROOM_L, ROOM_R - v.w);
-    CAMERA.ty = clamp(fy - v.h / 2, ROOM_T, bottom - v.h);
-    if (snap) { CAMERA.x = CAMERA.tx; CAMERA.y = CAMERA.ty; return; }
-    const follow = 1 - Math.pow(0.90, speedScale);
-    CAMERA.x += (CAMERA.tx - CAMERA.x) * follow;
-    CAMERA.y += (CAMERA.ty - CAMERA.y) * follow;
-    return;
-  }
-  // walking: assigned, not eased, and snapped to whole pixels
-  CAMERA.tx = clamp(Math.round(KRIS.x + CAM_KRIS_DX) - Math.floor(v.w / 2), ROOM_L, ROOM_R - v.w);
-  CAMERA.ty = clamp(Math.round(KRIS.y + CAM_KRIS_DY) - Math.floor(v.h / 2), ROOM_T, bottom - v.h);
-  CAMERA.x = CAMERA.tx;
-  CAMERA.y = CAMERA.ty;
+   There is nothing to follow any more: the stage is exactly one screen, so the
+   view is nailed to its origin at 1:1 and the piano sits where it is drawn. */
+function updateCamera() {
+  CAMERA.zoom = 1;
+  CAMERA.x = CAMERA.tx = 0;
+  CAMERA.y = CAMERA.ty = 0;
 }
 
 /* ---------------- the piano ----------------
@@ -717,19 +518,17 @@ function startSong(idx) {
   state.playing = true;
   state.frame = 0;
   state.played[s.id] = true;
-  roomMusic(false);
 }
 
-function stopSong(resumeRoom) {
+function stopSong() {
   if (songEl) { songEl.pause(); songEl.currentTime = 0; songEl = null; }
   state.playing = false;
-  if (resumeRoom) roomMusic(true);
 }
 
 function finishSong() {
-  if (!state.seated) { stopSong(false); return; }   // Kris already got up
-  stopSong(false);
-  standUp(true);
+  if (!state.seated) { stopSong(); return; }   // Kris already got up
+  stopSong();
+  standUp();
 }
 
 function resetPose() {
@@ -747,17 +546,16 @@ function sitDown(idx) {
   startSong(idx);
 }
 function sitDownFreePlay() {
-  stopSong(false);
+  stopSong();
   state.seated = true;
   state.freePlay = true;
   KRIS.dir = "u";
   KRIS.moving = false;
   resetPose();
-  roomMusic(false);
 }
 
-function standUp(sayLine) {
-  stopSong(true);
+function standUp() {
+  stopSong();
   state.seated = false;
   state.freePlay = false;
   resetPose();
@@ -765,10 +563,6 @@ function standUp(sayLine) {
   DT.facing = 2; DT.idleLast = true;
   DT.walktimer = 0; DT.walkbuffer = 0; DT.runtimer = 0;
   state.keyGlow.length = 0;
-  if (sayLine) {
-    pushPage("* (Kris let the last chord ring out.)/");
-    startDialogue();
-  }
 }
 
 function updatePiano() {
@@ -936,20 +730,10 @@ function drawPuppet() {
 }
 
 /* ---------------- interaction ---------------- */
-function facingSpot(sx, sy, sw, sh, dir) {
-  // Kris must be standing just outside the box, looking at it
-  const inX = KRIS.x > sx - 12 && KRIS.x < sx + sw + 12;
-  const inY = KRIS.y > sy - 14 && KRIS.y < sy + sh + 22;
-  return inX && inY && KRIS.dir === dir;
-}
 function nearPiano() {
   return KRIS.dir === "u" && Math.abs(KRIS.x - PIANO_SPOT.x) < 40 &&
          KRIS.y > PIANO.y + 70 && KRIS.y < PIANO.y + 118;
 }
-function nearTree()  { return facingSpot(TREE.x + 6, TREE.y + 90, 78, 46, "u"); }
-function nearTable() { return facingSpot(300, 90, 148, 88, "u"); }
-function nearDoor()  { return facingSpot(DOOR.x, DOOR.y, DOOR.w, DOOR.h, "u"); }
-function nearKitchen(){ return facingSpot(58, 40, 150, 59, "u"); }
 
 // index 0 in the picker is free play; the songs follow
 const FREE_PLAY_ROW = 0;
@@ -961,28 +745,14 @@ function openPicker() {
   playSound(cursorEl, 0.6);
 }
 
-function pianoInteract() {
-  pushPage("* (It's the family piano.)^1 (Its lid is propped open.)/");
-  pushChoice("* (Play something?)/", ["Play", "Not now"], () => {
-    if (DLG.choice === 0) openPicker();
-  });
-  startDialogue();
-}
+// No dialogue box any more: standing at the keys and pressing Z opens the
+// song list straight away.
+function pianoInteract() { openPicker(); }
 
 function handleInteract() {
-  if (DLG.showing) {
-    if (!(DLG.page.choices && DLG.choice === -1)) {
-      if (anyKey(["z", "enter", " "])) dDone();
-    }
-    return;
-  }
   if (state.seated) return;
   if (!anyKey(["z", "enter", " "])) return;
-  if (nearPiano())  { pianoInteract(); return; }
-  if (nearTree())   { pushPage("* (A tree, wrapped in red ribbon.)^1 (Someone tucked the ornaments where they'd catch the light.)/"); startDialogue(); return; }
-  if (nearTable())  { pushPage("* (The dining table is set for a crowd.)^1 (A dish waits in the middle, untouched.)/"); startDialogue(); return; }
-  if (nearDoor())   { playSound(doorCloseEl, 0.4); pushPage("* (The front door.)^1 (It's cold out there.)/"); startDialogue(); return; }
-  if (nearKitchen()){ pushPage("* (The kitchen counter.)^1 (Something sweet was made here recently.)/"); startDialogue(); return; }
+  if (nearPiano()) pianoInteract();
 }
 
 /* ---------------- song picker ---------------- */
@@ -1009,11 +779,11 @@ function handlePicker() {
 function keysAreLive() { return state.freePlay || REC.mode === 1; }
 
 function handleSeated() {
-  if (!state.seated || state.pickerOpen || DLG.showing) return;
-  if (anyKey(["escape"])) { standUp(false); return; }
+  if (!state.seated || state.pickerOpen) return;
+  if (anyKey(["escape"])) { standUp(); return; }
   if (pressed("w")) { if (!isSyncedSong() || state.freePlay) toggleRecorder(); return; }
   if (keysAreLive()) return;                    // Z X C V B N / P O I U Y T are notes now
-  if (anyKey(["x", "backspace"])) { standUp(false); return; }
+  if (anyKey(["x", "backspace"])) { standUp(); return; }
   if (anyKey(["c", "tab"])) { openPicker(); return; }   // switch tracks without standing
   if (pressed("r")) { clearRecording(); return; }
   if (pressed("l")) {
@@ -1040,15 +810,14 @@ function drawWalkingKris() {
   ctx.drawImage(spr, Math.round(KRIS.x) - spr.width / 2, Math.round(KRIS.y) - spr.height);
 }
 
+// Nothing but black behind the piano, exactly as in the title card.
 function drawRoom() {
   ctx.fillStyle = "#000";
   ctx.fillRect(0, 0, ROOM_W, ROOM_H);
-  if (img.roomBg) ctx.drawImage(img.roomBg, 0, 0);
 
-  // Kris is behind the tree/piano while walking above them, in front below.
+  // Kris is behind the piano while walking above it, in front of it below.
   const krisDepth = state.seated ? PIANO.y + 96 : KRIS.y;
   const props = [
-    { y: TREE.y + 134,  draw: () => { if (img.tree) ctx.drawImage(img.tree, TREE.x, TREE.y); } },
     { y: PIANO.y + 95,  draw: drawPiano },
     { y: krisDepth + 0.5, draw: () => { if (state.seated) drawSeatedKris(); else drawWalkingKris(); } }
   ];
@@ -1063,74 +832,6 @@ function drawPiano() {
   if (state.seated && state.playing) {
     ctx.fillStyle = "rgba(110, 130, 140, 0.55)";
     for (const k of state.keyGlow) ctx.fillRect(k.x, KEYS.y + 1, k.w, KEYS.h - 1);
-  }
-}
-
-// While Kris plays, the room falls back a little. Pure presentation - it just
-// pushes the eye toward the piano.
-function drawRoomDim() {
-  const amt = (CAMERA.zoom - ZOOM_WALK) / (ZOOM_PLAY - ZOOM_WALK);
-  if (amt <= 0.01) return;
-  const g = ctx.createRadialGradient(W * 0.66, H * 0.52, H * 0.20, W * 0.66, H * 0.52, H * 0.95);
-  g.addColorStop(0, "rgba(24, 18, 34, 0)");
-  g.addColorStop(1, "rgba(24, 18, 34, " + (0.42 * amt).toFixed(3) + ")");
-  ctx.fillStyle = g;
-  ctx.fillRect(0, 0, W, H);
-}
-
-function drawImageFlipped(sprite, x, y, w, h, flipX, flipY) {
-  ctx.save();
-  ctx.translate(x + (flipX ? w : 0), y + (flipY ? h : 0));
-  ctx.scale(flipX ? -1 : 1, flipY ? -1 : 1);
-  ctx.drawImage(sprite, 0, 0, w, h);
-  ctx.restore();
-}
-function drawOfficialDarkBox() {
-  const { x0, y0, x1, y1 } = DARKBOX;
-  const stretchW = x1 - x0 - 63, stretchH = y1 - y0 - 63;
-  ctx.fillStyle = "#000";
-  ctx.fillRect(x0 + 20, y0 + 20, x1 - x0 - 40, y1 - y0 - 40);
-  if (!img.darkboxTop || !img.darkboxLeft || !img.darkboxCorner) return;
-  ctx.drawImage(img.darkboxTop, x0 + 32, y0, stretchW, 32);
-  drawImageFlipped(img.darkboxTop, x0 + 32, y1 + 1 - 32, stretchW, 32, false, true);
-  ctx.drawImage(img.darkboxLeft, x0, y0 + 32, 32, stretchH);
-  drawImageFlipped(img.darkboxLeft, x1 + 1 - 32, y0 + 32, 32, stretchH, true, false);
-  const c = img.darkboxCorner;
-  ctx.drawImage(c, x0, y0, 32, 32);
-  drawImageFlipped(c, x1 + 1 - 32, y0, 32, 32, true, false);
-  drawImageFlipped(c, x0, y1 + 1 - 32, 32, 32, false, true);
-  drawImageFlipped(c, x1 + 1 - 32, y1 + 1 - 32, 32, 32, true, true);
-}
-function drawOfficialChoices(options) {
-  const midX = (DARKBOX.x0 + DARKBOX.x1) / 2, quarter = (DARKBOX.x1 - DARKBOX.x0) / 4;
-  const centersX = [Math.round(midX - quarter), Math.round(midX + quarter), Math.round(midX), Math.round(midX)];
-  const centersY = [DARKBOX.y0 + 72, DARKBOX.y0 + 72, DARKBOX.y0 + 40, DARKBOX.y0 + 104];
-  for (let i = 0; i < options.length; i++) {
-    const width = textWidth(options[i]) * 2;
-    drawTextScaled(options[i], centersX[i] - width / 2, centersY[i] - 16,
-                   i === DLG.choiceSel ? "#ffff00" : "#fff", 2);
-  }
-  const width = textWidth(options[DLG.choiceSel]) * 2;
-  if (img.choiceHeart) ctx.drawImage(img.choiceHeart,
-    Math.round(centersX[DLG.choiceSel] - width / 2 - 22), Math.round(centersY[DLG.choiceSel] - 8), 18, 18);
-}
-function drawDialogueBox() {
-  if (!DLG.showing || !DLG.page) return;
-  drawOfficialDarkBox();
-  if (DLG.page.choices && !DLG.typing) {
-    drawOfficialChoices(DLG.page.choices);
-    return;
-  }
-  const { x, y, line: lineH, scale, indent } = DLG_TEXT;
-  const maxW = (DARKBOX.x1 - 34 - x) / scale;
-  const lines = wrapWords(fullText(), maxW, indent / scale);
-  let left = DLG.pos - countPauses();
-  for (let i = 0; i < Math.min(3, lines.length); i++) {
-    if (left <= 0) break;
-    const line = lines[i];
-    drawTextScaled(left >= line.length ? line : line.slice(0, left),
-                   x + (i ? indent : 0), y + i * lineH, "#fff", scale);
-    left -= line.length + 1;
   }
 }
 
@@ -1210,7 +911,7 @@ function drawHud() {
     ctx.fillRect(bx + 12, by + 26, bw - 24, 4);
     ctx.fillStyle = (PUP.lDown || PUP.rDown) ? "#ffd94a" : "#5a5a5a";
     ctx.fillRect(bx + 12, by + 26, bw - 24, 4);
-    if (!state.pickerOpen && !DLG.showing) drawHintBar(pianoHintLine());
+    if (!state.pickerOpen) drawHintBar(pianoHintLine());
     return;
   }
   if (state.seated && state.playing) {
@@ -1226,8 +927,8 @@ function drawHud() {
     ctx.fillStyle = REC.mode === 1 ? "#ff6b6b" : s.id === SYNCED_SONG ? "#ffd94a" : "#9fd8a0";
     ctx.fillRect(bx + 12, by + 26, (bw - 24) * Math.min(1, pos / dur), 4);
     if (REC.mode === 1) drawText("REC", bx + bw - 108, by + 7, "#ff6b6b");
-    if (!state.pickerOpen && !DLG.showing) drawHintBar(pianoHintLine());
-  } else if (state.started && !state.seated && !DLG.showing && !state.pickerOpen && nearPiano()) {
+    if (!state.pickerOpen) drawHintBar(pianoHintLine());
+  } else if (state.started && !state.seated && !state.pickerOpen && nearPiano()) {
     drawHintBar("Z  sit down at the piano");
   }
 }
@@ -1375,11 +1076,11 @@ function drawTitle() {
       ctx.drawImage(sheet, (f % PIANO_SHEET.cols) * c, Math.floor(f / PIANO_SHEET.cols) * c, c, c,
                     W - 214, 92, c * 3, c * 3);
     }
-    drawText("KRIS AT THE PIANO", 40, 78, "#fff");
-    drawText("room_lw_noellehouse_kitchen", 40, 100, "#aaa");
+    drawText("KRIS PIANO SONGS", 40, 78, "#fff");
+    drawText("one piano, one black stage", 40, 100, "#aaa");
     drawText("obj_ch4_DCA09_piano  /  obj_kris_pianopuppet", 40, 116, "#aaa");
     drawText("Arrows or WASD to walk.  Shift or X to run.", 40, 162, "#fff");
-    drawText("Z to look at things.  Sit at the piano, pick a song.", 40, 180, "#fff");
+    drawText("Face the keys and press Z, then pick a song.", 40, 180, "#fff");
     drawText("Or play it yourself, and record what you play.", 40, 198, "#fff");
     if ((Math.floor(Date.now() / 400) % 2) === 0) drawText("Press Z to begin", 40, 232, "#fff");
     drawText("Press B for settings", 40, 252, "#aaa");
@@ -1443,18 +1144,15 @@ function handleMenuClick(mx, my) {
 function startGame() {
   state.started = true;
   state.fade = 1;
-  KRIS.x = 435; KRIS.y = 186; KRIS.dir = "d";
-  DT.facing = 0; DT.idleLast = true;
+  KRIS.x = START_SPOT.x; KRIS.y = START_SPOT.y; KRIS.dir = START_SPOT.dir;
+  DT.facing = 1; DT.idleLast = true;        // 1 = right, looking at the piano
   DT.walktimer = 0; DT.walkbuffer = 0; DT.runtimer = 0;
-  updateCamera(true);
-  roomMusic(true);
+  updateCamera();
 }
 function exitToMenu() {
-  stopSong(false);
-  roomMusic(false);
+  stopSong();
   state.started = false; state.seated = false; state.pickerOpen = false;
   state.menu = "title"; state.menuSel = 0;
-  DLG.queue.length = 0; DLG.showing = false; DLG.page = null;
   for (const k of Object.keys(keys)) keys[k] = false;
   clearPressed();
 }
@@ -1473,10 +1171,9 @@ function frame(ts) {
       handleSeated();
       handleInteract();
       updatePlayer();
-      updateDialogue();
     }
     updatePiano();
-    updateCamera(false);
+    updateCamera();
   }
 
   ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -1491,11 +1188,8 @@ function frame(ts) {
     ctx.translate(-CAMERA.x, -CAMERA.y);
     drawRoom();
     ctx.restore();
-    drawRoomDim();
     drawHud();
     drawPicker();
-    // Dialogue has its own native scale; do not apply the HUD/menu 2x scale.
-    drawDialogueBox();
   }
   drawTitle();
   if (state.fade > 0) {
@@ -1523,35 +1217,19 @@ async function boot() {
   for (const dir of ["d", "u", "l", "r"]) {
     for (let i = 0; i < 4; i++) krisWalk[dir].push(await loadImage("assets/kris/" + dir + "_" + i + ".png"));
   }
-  img.roomBg    = await loadImage(ASSETS.roomBg);
   img.piano     = await loadImage(ASSETS.piano);
-  img.keys      = await loadImage(ASSETS.keys);
   img.bench     = await loadImage(ASSETS.bench);
-  img.tree      = await loadImage(ASSETS.tree);
-  img.door      = await loadImage(ASSETS.door);
   for (const k of ["pianoFull", "pianoFullLw", "puppetBody", "puppetBodyLw",
                    "puppetLarm", "puppetLarmLw", "puppetRarm", "puppetRarmLw"]) {
     img[k] = await loadImage(ASSETS[k]);
   }
   img.heart     = await loadImage(ASSETS.heart);
   img.font      = await loadImage(ASSETS.font);
-  img.darkboxTop    = await loadImage(DARKBOX_ASSETS.top);
-  img.darkboxLeft   = await loadImage(DARKBOX_ASSETS.left);
-  img.darkboxCorner = await loadImage(DARKBOX_ASSETS.corner);
-  img.choiceHeart   = await loadImage(DARKBOX_ASSETS.heart);
   parseFontCsv(GLYPH_CSV);
 
-  roomMusEl   = makeEl(ASSETS.roomMus, true);
-  blipEl      = makeEl(ASSETS.blip, false);
-  cursorEl    = makeEl(ASSETS.cursor, false);
-  doorOpenEl  = makeEl(ASSETS.doorOpen, false);
-  doorCloseEl = makeEl(ASSETS.doorClose, false);
-  noteEl      = makeEl(ASSETS.note, false);
+  cursorEl = makeEl(ASSETS.cursor, false);
+  noteEl   = makeEl(ASSETS.note, false);
   loadRecordings();
-
-  window.addEventListener("keydown", () => {
-    if (state.started && roomMusEl && roomMusEl.paused && !state.playing) roomMusEl.play().catch(() => {});
-  }, { once: true });
 
   canvas.addEventListener("click", e => {
     const r = canvas.getBoundingClientRect();
@@ -1568,8 +1246,8 @@ async function boot() {
   requestAnimationFrame(frame);
 }
 
-// Screenshot/debug hook: index.html?auto=1&x=551&y=186&seat=0&mute=1 drops
-// straight into the room (and optionally onto the bench) without any input.
+// Screenshot/debug hook: index.html?auto=1&x=71&y=127&seat=0&mute=1 drops
+// straight onto the stage (and optionally onto the bench) without any input.
 function applyDebugQuery() {
   const q = new URLSearchParams(location.search);
   if (!q.has("auto") && !q.has("seat")) return;
@@ -1577,7 +1255,6 @@ function applyDebugQuery() {
   state.fade = 0;
   if (q.has("x")) KRIS.x = +q.get("x");
   if (q.has("y")) KRIS.y = +q.get("y");
-  if (q.has("mute")) { roomMusic(false); }
   if (q.has("seat")) {
     const idx = Math.max(0, Math.min(SONGS.length - 1, +q.get("seat") || 0));
     state.seated = true;
@@ -1598,10 +1275,8 @@ function applyDebugQuery() {
   }
   if (q.has("rec")) { REC.mode = 1; REC.frame = +(q.get("rec") || 0); }
   if (q.has("picker")) { state.pickerOpen = true; state.pickerSel = +(q.get("picker") || 0); }
-  if (q.has("say")) { pianoInteract(); DLG.typing = false; DLG.pos = DLG.page.text.length;
-                      if (+q.get("say") > 0) { dDone(); DLG.typing = false; DLG.pos = DLG.page.text.length; } }
   if (q.has("menu")) { state.started = false; state.menu = "settings"; state.menuSel = +(q.get("menu") || 0); }
-  updateCamera(true);
+  updateCamera();
 }
 
 boot().catch(err => {

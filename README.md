@@ -1,7 +1,12 @@
-# Kris at the Piano — prototype
+# Kris Piano Songs — prototype
 
-The room from `hq720.jpg`, rebuilt as a playable scene. Open `index.html`
-(double-click works; no server needed).
+The piano alone on black, the framing of the *Kris Piano Songs* title card,
+rebuilt as a playable scene. Open `index.html` (double-click works; no server
+needed).
+
+The earlier version — the one set in Noelle's house, with the room, the
+dialogue box and the room music — is kept intact in
+[`noelle_house_version/`](noelle_house_version/) and is worked on separately.
 
 ## Controls
 
@@ -9,8 +14,8 @@ The room from `hq720.jpg`, rebuilt as a playable scene. Open `index.html`
 |---|---|
 | Arrows / WASD | walk |
 | Shift or X | run |
-| Z / Enter / Space | talk to things, confirm |
-| Z at the piano | sit down, then pick a song — or play it yourself |
+| Z / Enter / Space | confirm |
+| Z at the keys | open the song list — then a song, or play it yourself |
 
 Sitting at the piano:
 
@@ -27,15 +32,15 @@ Sitting at the piano:
 
 ## What it is
 
-**The room** is `room_lw_noellehouse_kitchen` from chapter 4 — the Holiday
-dining room in Noelle's house. `bg_noellehouse_kitchen` (640×240) is the
-painted background; the tree, grand piano and bench are separate sprites the
-room layers on top of it, so they are placed here as separate objects too.
-The decompile keeps no object placements for that room (only its four
-`PreCreate` scripts survive), so the layout was matched against the reference
-frame: the room is drawn at 2× in a 640×360 view, which lands within a pixel
-or two of the shot. Sitting down eases the camera in on the keyboard and lets
-the rest of the room fall back.
+**The stage** is nothing at all: black, with the grand piano and its bench
+(`spr_noellehouse_kitchen_piano`, 89×95, and `..._piano_seat`, 46×19) centred
+on it, drawn at 2× in the 640×360 view — the size and framing the title card
+uses. The stage is exactly one screen wide, so the camera never moves and the
+sprites keep their native pixels. Kris starts to the left of the piano and
+walks the whole stage; the piano is the only thing he can't walk through.
+
+There is no dialogue box: facing the keys and pressing `Z` opens the song list
+straight away.
 
 ### LOWER plays the way the game plays it
 
@@ -107,36 +112,18 @@ prototype — run boost, facing latch, wall-slide and corner resolution, with
 every 30 fps constant halved for 60 fps and normalised for any refresh rate.
 Settings has the old 8-way walker too.
 
-### The camera doesn't smooth, and that's on purpose
+### The camera doesn't move
 
-You were right that it felt off. `obj_mainchara/Step_2.gml`, light-world
-branch, has no easing in it at all — every step the view is *assigned*:
-
-```gml
-wd = (x - floor(view_w / 2)) + 11;
-ht = (y - floor(view_h / 2)) + 17;
-// ...then clamped to the room
-```
-
-So the camera here is rigid and pixel-snapped, locked to Kris and stopping
-dead at the walls. (`x, y` there is the sprite's top-left corner, so `+11/+17`
-lands on his middle; this prototype tracks his feet, hence the conversion.)
-
-The one place Deltarune *does* ease a camera is a cutscene move —
-`obj_camera_advanced` with `panStyle 1`, a lerp toward a target. Sitting down
-at the piano is exactly that, so the push-in eases and getting up eases back
-out, and nothing else in the game ever does.
+`obj_mainchara/Step_2.gml`, light-world branch, has no easing in it — every
+step the view is *assigned* and then clamped to the room. Here there is nothing
+to clamp against and nothing to follow: the stage is one screen, so the view is
+nailed to its origin at 1:1 and the piano stays where it is drawn.
 
 ### The interface
 
 The title screen, settings, song list and piano HUD are the prototype's own
-plain styling, drawn at 1x over the 2x room.
-
-The text box is the exception: it is the Deltarune box, drawn at its own scale
-with its own corner pieces, and it is the one piece of interface that is meant
-to look like the game. `drawText` tints `fnt_main` (8bitoperator JVE) per
-colour on demand, and a page is word-wrapped up front so a word never hops down
-a row part-way through typing.
+plain styling, drawn at 1x over the 2x stage. `drawText` tints `fnt_main`
+(8bitoperator JVE) per colour on demand.
 
 ## Songs
 
@@ -145,25 +132,23 @@ All nine piano tracks from `mus/kris_piano/`:
 LOWER · PROPHECY · LAST PROPHECY · LANCER'S WALTZ · ROUXLS KAARD · SHOP ·
 WAITING ROOM · SEVEN / FOUR · QUIZ
 
-Room ambience is `mus/noelle/noelle_house_wip.ogg`; it ducks out while Kris
-plays and comes back when he stands up.
+Nothing else sounds: the room ambience (`room_noelle_house.ogg`) belonged to
+the house and is gone from this version. It is still in
+`noelle_house_version/assets/mus/`.
 
 ## Debug
 
-`index.html?auto=1` drops straight into the room. `&x=`/`&y=` place Kris,
+`index.html?auto=1` drops straight onto the stage. `&x=`/`&y=` place Kris,
 `&seat=N` sits him at song N, `&free=1` starts free play, `&picker=N` opens the
 song list, `&pt=SEC` poses the puppet from that song's performance, `&rec=N`
-shows the recording HUD, `&say=0|1` opens the piano text box or its choice,
-`&menu=N` opens settings, `&mute=1` starts silent (`&frame=N` freezes a baked
-animation frame). Handy for screenshots.
+shows the recording HUD, `&menu=N` opens settings, `&mute=1` starts silent
+(`&frame=N` freezes a baked animation frame). Handy for screenshots.
 
 ## Layout
 
 ```
 assets/
-  room_bg.png              bg_noellehouse_kitchen
-  piano.png / piano_keys.png / piano_seat.png
-  tree.png / chairs.png / door_closed.png
+  piano.png / piano_seat.png   spr_noellehouse_kitchen_piano and its seat
   kris/{d,u,l,r}_{0..3}.png    spr_krisd / spr_krisu / spr_krisl / spr_krisr
   piano_full.png               spr_kris_piano_full, 525 frames, 25x21 grid of 52px cells
   piano_full_lw.png            ...recoloured to the light-world palette
@@ -172,8 +157,14 @@ assets/
   puppet_rarm.png              spr_kris_pianopuppet_rarm, 12 frames
   puppet_*_lw.png              ...recoloured
   performances.js              one performance string per hand per song
-  fnt_main.png  heart.png (spr_heartsmall)  logo.png
-  mus/*.ogg  sfx/*.wav         sfx/krispiano.wav is snd_krispiano, the note
+  fnt_main.png  heart.png (spr_heartsmall)
+  mus/kris_piano_*.ogg         the nine piano tracks
+  sfx/*.wav                    sfx/krispiano.wav is snd_krispiano, the note
 tools/
   make_performances.py         regenerates assets/performances.js
+noelle_house_version/          the previous version, room and all, untouched
 ```
+
+The room art (`room_bg.png`, `tree.png`, `chairs.png`, `door_closed.png`,
+`piano_keys.png`) and the room music are no longer loaded here; they live on in
+`noelle_house_version/assets/`.
