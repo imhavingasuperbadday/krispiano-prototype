@@ -82,15 +82,21 @@ function roundRect(c, x, y, w, h, r) {
   c.closePath();
 }
 function drawSoul(x, y, s) {
-  ctx.fillStyle = "#ff0000";
-  ctx.beginPath();
-  ctx.arc(x - 4 * s, y - 3 * s, 4 * s, 0, Math.PI * 2);
-  ctx.arc(x + 4 * s, y - 3 * s, 4 * s, 0, Math.PI * 2);
-  ctx.moveTo(x - 8 * s, y - 2 * s);
-  ctx.lineTo(x + 8 * s, y - 2 * s);
-  ctx.lineTo(x, y + 8 * s);
-  ctx.closePath();
-  ctx.fill();
+  const spr = img.heart;
+  if (!spr) { // fallback: crude approximation if the sprite is missing
+    ctx.fillStyle = "#ff0000";
+    ctx.beginPath();
+    ctx.arc(x - 4 * s, y - 3 * s, 4 * s, 0, Math.PI * 2);
+    ctx.arc(x + 4 * s, y - 3 * s, 4 * s, 0, Math.PI * 2);
+    ctx.moveTo(x - 8 * s, y - 2 * s);
+    ctx.lineTo(x + 8 * s, y - 2 * s);
+    ctx.lineTo(x, y + 8 * s);
+    ctx.closePath();
+    ctx.fill();
+    return;
+  }
+  // spr_heartsmall: 9x9, centred on (x, y)
+  ctx.drawImage(spr, 0, 0, 9, 9, Math.round(x - 4.5 * s), Math.round(y - 4.5 * s), 9 * s, 9 * s);
 }
 /* ---------------- assets ---------------- */
 const ASSETS = {
@@ -198,7 +204,8 @@ const settings = {
   walkMode: 0,
   palette: 0,
   animMode: 0,
-  autoLoop: false   // keep the chosen song looping instead of standing up
+  autoLoop: false,  // wrap around after the last song / repeat a single song
+  autoNext: true    // when a song ends, roll straight into the next one
 };
 const SETTINGS_KEY = "krispiano.settings.v1";
 
@@ -210,6 +217,7 @@ function loadSettings() {
     if (Number.isInteger(s.palette)) settings.palette = Math.max(0, Math.min(PALETTES.length - 1, s.palette));
     if (Number.isInteger(s.animMode)) settings.animMode = Math.max(0, Math.min(ANIM_MODES.length - 1, s.animMode));
     if (typeof s.autoLoop === "boolean") settings.autoLoop = s.autoLoop;
+    if (typeof s.autoNext === "boolean") settings.autoNext = s.autoNext;
   } catch (_) { /* storage may be unavailable; the defaults are fine */ }
 }
 function saveSettings() {
@@ -244,7 +252,9 @@ const state = {
   pickerSel: 0,
   frame: 0,            // spr_kris_piano_full image_index
   played: {},          // songs heard at least once
-  fade: 0
+  fade: 0,
+  hideUI: false,       // Y toggles: stage only, no HUD/hints
+  hideKris: false      // T toggles: Kris invisible, walking or seated
 };
 
 // Loudness envelopes, 10 samples/sec, measured from each ogg. They only set
@@ -504,15 +514,19 @@ function updateCamera() {
    Kris's hands faster, quiet ones let them settle.                          */
 const NATIVE_FPS = 524 / 41.5;   // spr_kris_piano_full's own rate, from lower.ogg
 
+// With Play next on, songs chain into each other and Loop wraps the set;
+// with it off, Loop means the old single-song repeat.
+function songRepeats() { return settings.autoLoop && !settings.autoNext; }
+
 function startSong(idx) {
   stopSong(false);
   state.songIdx = idx;
   const s = SONGS[idx];
-  songEl = makeEl(s.file, settings.autoLoop);
+  songEl = makeEl(s.file, songRepeats());
   songEl.volume = 0.9;
   songEl.play().catch(() => {});
   songEl.addEventListener("ended", () => {
-    if (!settings.autoLoop) finishSong();
+    if (!songRepeats()) finishSong();
   });
   state.playing = true;
   state.frame = 0;
@@ -527,6 +541,11 @@ function stopSong() {
 function finishSong() {
   if (!state.seated) { stopSong(); return; }   // Kris already got up
   stopSong();
+  if (settings.autoNext) {
+    const next = state.songIdx + 1;
+    if (next < SONGS.length) { sitDown(next); return; }        // roll on
+    if (settings.autoLoop) { sitDown(0); return; }             // wrap the set
+  }
   standUp();
 }
 
@@ -580,7 +599,7 @@ function updatePiano() {
     else if (perf) applyPerformance(perf, pos0);
     PUP.lWasDown = PUP.lDown; PUP.rWasDown = PUP.rDown;
     const done = (ENV[s.id] ? pos0 >= ENV[s.id].dur - 0.05 : false);
-    if (done && !settings.autoLoop) finishSong();
+    if (done && !songRepeats()) finishSong();
     return;
   }
   const dur = (ENV[s.id] && ENV[s.id].dur) || songEl.duration || 1;
@@ -590,7 +609,7 @@ function updatePiano() {
     // obj_ch4_DCA09_piano/Step_0.gml, verbatim
     const progress = (pos - 0) / (dur - 0.75 - 0);
     state.frame = Math.max(0, Math.min(524, 524 * progress));
-    if (progress >= 1 && !settings.autoLoop) { finishSong(); return; }
+    if (progress >= 1 && !songRepeats()) { finishSong(); return; }
   } else {
     const loud = envAt(s, pos);
     const fps = NATIVE_FPS * (0.55 + 0.95 * loud);
@@ -729,6 +748,14 @@ function handleInteract() {
   if (nearPiano()) pianoInteract();
 }
 
+// Y shows/hides the UI, T shows/hides Kris. Both back off while the piano
+// keys are live - in free play and while recording, Y/T are right-hand notes.
+function handleToggles() {
+  if (!state.started || keysAreLive()) return;
+  if (pressed("y")) { state.hideUI = !state.hideUI; playSound(cursorEl, 0.4); }
+  if (pressed("t")) { state.hideKris = !state.hideKris; playSound(cursorEl, 0.4); }
+}
+
 /* ---------------- song picker ---------------- */
 function handlePicker() {
   if (!state.pickerOpen) return;
@@ -762,7 +789,7 @@ function handleSeated() {
   if (pressed("r")) { clearRecording(); return; }
   if (pressed("l")) {
     updateSetting(() => { settings.autoLoop = !settings.autoLoop; });
-    if (songEl) songEl.loop = settings.autoLoop;
+    if (songEl) songEl.loop = songRepeats();
   }
 }
 
@@ -793,7 +820,10 @@ function drawRoom() {
   const krisDepth = state.seated ? PIANO.y + 96 : KRIS.y;
   const props = [
     { y: PIANO.y + 95,  draw: drawPiano },
-    { y: krisDepth + 0.5, draw: () => { if (state.seated) drawSeatedKris(); else drawWalkingKris(); } }
+    { y: krisDepth + 0.5, draw: () => {
+        if (state.hideKris) return;   // T: hide Kris, whatever he is right now
+        if (state.seated) drawSeatedKris(); else drawWalkingKris();
+      } }
   ];
   props.sort((a, b) => a.y - b.y);
   for (const p of props) p.draw();
@@ -850,6 +880,10 @@ function fmtTime(sec) {
   return m + ":" + (s < 10 ? "0" : "") + s;
 }
 
+// shown at the end of every hint bar; suppressed while Y/T are piano notes
+const TOGGLES_HINT = "      Y  hide UI      T  hide Kris";
+function hintWithToggles(base) { return base + (keysAreLive() ? "" : TOGGLES_HINT); }
+
 function pianoHintLine() {
   if (REC.mode === 1) return "W  stop recording      ESC  get up      (Kris is following you)";
   if (state.freePlay) return "Z X C V B N  left      P O I U Y T  right      W  record      ESC  get up";
@@ -870,6 +904,7 @@ function drawHintBar(hint) {
 }
 
 function drawHud() {
+  if (state.hideUI) return;   // Y: just the stage, nothing over it
   const bw = 232, bx = W - bw - 14, by = 12;
   if (state.seated && state.freePlay) {
     ctx.fillStyle = "rgba(0,0,0,0.62)";
@@ -880,7 +915,7 @@ function drawHud() {
     ctx.fillRect(bx + 12, by + 26, bw - 24, 4);
     ctx.fillStyle = (PUP.lDown || PUP.rDown) ? "#ffd94a" : "#5a5a5a";
     ctx.fillRect(bx + 12, by + 26, bw - 24, 4);
-    if (!state.pickerOpen) drawHintBar(pianoHintLine());
+    if (!state.pickerOpen) drawHintBar(hintWithToggles(pianoHintLine()));
     return;
   }
   if (state.seated && state.playing) {
@@ -896,9 +931,9 @@ function drawHud() {
     ctx.fillStyle = REC.mode === 1 ? "#ff6b6b" : s.id === SYNCED_SONG ? "#ffd94a" : "#9fd8a0";
     ctx.fillRect(bx + 12, by + 26, (bw - 24) * Math.min(1, pos / dur), 4);
     if (REC.mode === 1) drawText("REC", bx + bw - 108, by + 7, "#ff6b6b");
-    if (!state.pickerOpen) drawHintBar(pianoHintLine());
+    if (!state.pickerOpen) drawHintBar(hintWithToggles(pianoHintLine()));
   } else if (state.started && !state.seated && !state.pickerOpen && nearPiano()) {
-    drawHintBar("Z  sit down at the piano");
+    drawHintBar("Z  sit down at the piano" + TOGGLES_HINT);
   }
 }
 
@@ -1028,7 +1063,10 @@ const SETTING_ROWS = () => [
     inc: () => updateSetting(() => { settings.palette = (settings.palette + 1) % PALETTES.length; }) },
   { label: "Loop songs", value: () => settings.autoLoop ? "ON" : "OFF",
     dec: () => updateSetting(() => { settings.autoLoop = !settings.autoLoop; }),
-    inc: () => updateSetting(() => { settings.autoLoop = !settings.autoLoop; }) }
+    inc: () => updateSetting(() => { settings.autoLoop = !settings.autoLoop; }) },
+  { label: "Play next", value: () => settings.autoNext ? "ON" : "OFF",
+    dec: () => updateSetting(() => { settings.autoNext = !settings.autoNext; }),
+    inc: () => updateSetting(() => { settings.autoNext = !settings.autoNext; }) }
 ];
 
 function drawTitle() {
@@ -1069,8 +1107,9 @@ function drawTitle() {
     drawText("Walk code: " + WALK_MODES[settings.walkMode].hint, 46, y + 4, "#aaa");
     drawText("Animation: " + ANIM_MODES[settings.animMode].hint, 46, y + 20, "#aaa");
     drawText("LOWER always keeps spr_kris_piano_full.", 46, y + 36, "#aaa");
-    drawButton(140, y + 56, 100, "BACK", state.menuSel === rows.length);
-    addMenuBtn(140, y + 56, 100, () => { state.menu = "title"; state.menuSel = 0; });
+    drawText("Play next rolls into the next song; Loop wraps the set.", 46, y + 52, "#aaa");
+    drawButton(140, y + 76, 100, "BACK", state.menuSel === rows.length);
+    addMenuBtn(140, y + 76, 100, () => { state.menu = "title"; state.menuSel = 0; });
   }
 }
 
@@ -1113,6 +1152,7 @@ function handleMenuClick(mx, my) {
 function startGame() {
   state.started = true;
   state.fade = 1;
+  state.hideUI = false; state.hideKris = false;
   KRIS.x = START_SPOT.x; KRIS.y = START_SPOT.y; KRIS.dir = START_SPOT.dir;
   DT.facing = 1; DT.idleLast = true;        // 1 = right, looking at the piano
   DT.walktimer = 0; DT.walkbuffer = 0; DT.runtimer = 0;
@@ -1141,6 +1181,7 @@ function frame(ts) {
       handleInteract();
       updatePlayer();
     }
+    handleToggles();
     updatePiano();
     updateCamera();
   }
