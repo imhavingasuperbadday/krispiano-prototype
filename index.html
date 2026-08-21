@@ -175,7 +175,7 @@ function pal(base) { return img[base + PALETTES[settings.palette].suffix]; }
    assets/performances.js holds one such string per hand per song, generated
    from the audio by tools/make_performances.py. A performance you record in
    here is the same kind of string and simply replaces it.                    */
-const PUPPET = { x: 537, y: 131 };   // hands land on the keyboard band
+const PUPPET = { x: PIANO.x + 29, y: PIANO.y + 57 };   // hands land on the keyboard band
 const PUPPET_CELL = { w: 34, h: 34, bodyW: 30, armDX: -2 };
 const POS_CHAR = { "1": 5, "2": 4, "3": 3, "L": 2, "U": 1, "R": 0 };
 const CHAR_POS = ["R", "U", "L", "3", "2", "1"];        // position 0..5 -> char
@@ -244,8 +244,7 @@ const state = {
   pickerSel: 0,
   frame: 0,            // spr_kris_piano_full image_index
   played: {},          // songs heard at least once
-  fade: 0,
-  keyGlow: []          // {x,w,t} recently struck keys
+  fade: 0
 };
 
 // Loudness envelopes, 10 samples/sec, measured from each ogg. They only set
@@ -535,7 +534,6 @@ function resetPose() {
   PUP.l = 2; PUP.r = 2; PUP.lDown = false; PUP.rDown = false;
   PUP.lWasDown = false; PUP.rWasDown = false;
   REC.mode = 0; REC.l = ""; REC.r = ""; REC.frame = 0;
-  state.keyGlow.length = 0;
 }
 function sitDown(idx) {
   state.seated = true;
@@ -562,7 +560,6 @@ function standUp() {
   KRIS.x = PIANO_SPOT.x; KRIS.y = PIANO_SPOT.y; KRIS.dir = "u";
   DT.facing = 2; DT.idleLast = true;
   DT.walktimer = 0; DT.walkbuffer = 0; DT.runtimer = 0;
-  state.keyGlow.length = 0;
 }
 
 function updatePiano() {
@@ -571,7 +568,6 @@ function updatePiano() {
   if (state.freePlay) {                 // Kris is yours; no track, no timeline
     updateFreePlay();
     recTick();
-    state.keyGlow = state.keyGlow.filter(k => (k.t -= speedScale) > 0);
     return;
   }
   if (!state.playing || !songEl) return;
@@ -582,12 +578,6 @@ function updatePiano() {
     const perf = performanceFor(s.id);
     if (REC.mode === 1) { updateFreePlay(); recTick(); }   // playing along, being taped
     else if (perf) applyPerformance(perf, pos0);
-    // the keyboard lights under whichever hand just came down
-    state.keyGlow = state.keyGlow.filter(k => (k.t -= speedScale) > 0);
-    if (REC.mode !== 1) {
-      if (PUP.lDown && !PUP.lWasDown) strikeKeyAt(PUP.l, true);
-      if (PUP.rDown && !PUP.rWasDown) strikeKeyAt(PUP.r, false);
-    }
     PUP.lWasDown = PUP.lDown; PUP.rWasDown = PUP.rDown;
     const done = (ENV[s.id] ? pos0 >= ENV[s.id].dur - 0.05 : false);
     if (done && !settings.autoLoop) finishSong();
@@ -605,14 +595,6 @@ function updatePiano() {
     const loud = envAt(s, pos);
     const fps = NATIVE_FPS * (0.55 + 0.95 * loud);
     state.frame = (state.frame + fps * (speedScale / 60)) % PIANO_SHEET.frames;
-  }
-
-  // strike a key under whichever hand is further out, scaled by loudness
-  const loud = envAt(s, pos);
-  state.keyGlow = state.keyGlow.filter(k => (k.t -= speedScale) > 0);
-  if (loud > 0.22 && Math.random() < 0.10 + 0.35 * loud) {
-    const w = 2 + Math.floor(Math.random() * 2);
-    state.keyGlow.push({ x: KEYS.x + Math.floor(Math.random() * (KEYS.w - w)), w, t: 8 + 10 * loud });
   }
 }
 
@@ -658,21 +640,13 @@ function updateFreePlay() {
     const lp = 5 - i, rp = 5 - i;             // Z and P are position 5, N and T are 0
     if (held(LEFT_KEYS[i]))  lPos = lp;
     if (held(RIGHT_KEYS[i])) rPos = rp;
-    if (pressed(LEFT_KEYS[i]))  { playNote(LEFT_POS_MIDI[lp]); strikeKeyAt(lp, true); }
-    if (pressed(RIGHT_KEYS[i])) { playNote(RIGHT_POS_MIDI[rp]); strikeKeyAt(rp, false); }
+    if (pressed(LEFT_KEYS[i]))  playNote(LEFT_POS_MIDI[lp]);
+    if (pressed(RIGHT_KEYS[i])) playNote(RIGHT_POS_MIDI[rp]);
   }
   PUP.lDown = lPos >= 0;
   PUP.rDown = rPos >= 0;
   if (lPos >= 0) PUP.l = lPos;
   if (rPos >= 0) PUP.r = rPos;
-}
-
-// light up the part of the keyboard the hand is over
-function strikeKeyAt(pos, leftHand) {
-  const half = KEYS.w / 2;
-  const t = (pos + 0.5) / 6;
-  const x = leftHand ? KEYS.x + half * (1 - t) : KEYS.x + half + half * t;
-  state.keyGlow.push({ x: Math.round(x) - 2, w: 4, t: 14 });
 }
 
 /* --- recorder: W cycles off -> recording -> kept, like KeyPress_87 --- */
@@ -828,11 +802,6 @@ function drawRoom() {
 function drawPiano() {
   if (img.piano) ctx.drawImage(img.piano, PIANO.x, PIANO.y);
   if (img.bench) ctx.drawImage(img.bench, BENCH.x, BENCH.y);
-  // struck keys: a soft shadow on the key band while Kris plays
-  if (state.seated && state.playing) {
-    ctx.fillStyle = "rgba(110, 130, 140, 0.55)";
-    for (const k of state.keyGlow) ctx.fillRect(k.x, KEYS.y + 1, k.w, KEYS.h - 1);
-  }
 }
 
 function drawPicker() {

@@ -39,8 +39,14 @@ uses. The stage is exactly one screen wide, so the camera never moves and the
 sprites keep their native pixels. Kris starts to the left of the piano and
 walks the whole stage; the piano is the only thing he can't walk through.
 
+Both sprites carried a patch of the kitchen floor baked in behind the legs, so
+those pixels (`#deBB9c`) are cleared to transparency here — on black the piano
+would otherwise sit on a peach-coloured slab. The originals are untouched in
+`noelle_house_version/assets/`.
+
 There is no dialogue box: facing the keys and pressing `Z` opens the song list
-straight away.
+straight away. Nothing is drawn over the key band while Kris plays either; the
+struck-key shading read as dark specks on the keys and is gone.
 
 ### LOWER plays the way the game plays it
 
