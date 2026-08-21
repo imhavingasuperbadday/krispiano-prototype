@@ -205,7 +205,8 @@ const settings = {
   palette: 0,
   animMode: 0,
   autoLoop: false,  // wrap around after the last song / repeat a single song
-  autoNext: true    // when a song ends, roll straight into the next one
+  autoNext: true,   // when a song ends, roll straight into the next one
+  volume: 0.9       // master multiplier on every sound
 };
 const SETTINGS_KEY = "krispiano.settings.v1";
 
@@ -218,6 +219,7 @@ function loadSettings() {
     if (Number.isInteger(s.animMode)) settings.animMode = Math.max(0, Math.min(ANIM_MODES.length - 1, s.animMode));
     if (typeof s.autoLoop === "boolean") settings.autoLoop = s.autoLoop;
     if (typeof s.autoNext === "boolean") settings.autoNext = s.autoNext;
+    if (Number.isFinite(s.volume)) settings.volume = Math.max(0, Math.min(1, +s.volume));
   } catch (_) { /* storage may be unavailable; the defaults are fine */ }
 }
 function saveSettings() {
@@ -295,7 +297,7 @@ function makeEl(src, loop) {
 function playSound(el, vol) {
   if (!el) return;
   const c = el.cloneNode();
-  c.volume = vol === undefined ? 0.9 : vol;
+  c.volume = Math.min(1, (vol === undefined ? 0.9 : vol) * settings.volume);
   c.play().catch(() => {});
 }
 /* ---------------- font ---------------- */
@@ -523,7 +525,7 @@ function startSong(idx) {
   state.songIdx = idx;
   const s = SONGS[idx];
   songEl = makeEl(s.file, songRepeats());
-  songEl.volume = 0.9;
+  songEl.volume = 0.9 * settings.volume;
   songEl.play().catch(() => {});
   songEl.addEventListener("ended", () => {
     if (!songRepeats()) finishSong();
@@ -1048,7 +1050,11 @@ function drawButton(x, y, w, label, hi) {
   drawText(label, x + 8, y + 5, hi ? "#000" : "#fff");
 }
 
-const SETTING_ROWS = () => [
+// values flash yellow for a moment after they change, like the game's own menus
+const FLASH = { row: -1, t: 0 };
+
+const SETTING_ROWS = () => {
+  const rows = [
   { label: "Walk speed", value: () => settings.walkSpeed.toFixed(1) + " px/f @60",
     dec: () => updateSetting(() => { settings.walkSpeed = Math.max(0.5, +(settings.walkSpeed - 0.1).toFixed(1)); }),
     inc: () => updateSetting(() => { settings.walkSpeed = Math.min(4, +(settings.walkSpeed + 0.1).toFixed(1)); }) },
@@ -1061,13 +1067,29 @@ const SETTING_ROWS = () => [
   { label: "Piano Kris", value: () => PALETTES[settings.palette].name,
     dec: () => updateSetting(() => { settings.palette = (settings.palette + PALETTES.length - 1) % PALETTES.length; }),
     inc: () => updateSetting(() => { settings.palette = (settings.palette + 1) % PALETTES.length; }) },
+  { label: "Volume", value: () => Math.round(settings.volume * 100) + "%",
+    dec: () => updateSetting(() => {
+      settings.volume = Math.max(0, +(settings.volume - 0.1).toFixed(1));
+      if (songEl) songEl.volume = 0.9 * settings.volume;   // hear it while you drag
+    }),
+    inc: () => updateSetting(() => {
+      settings.volume = Math.min(1, +(settings.volume + 0.1).toFixed(1));
+      if (songEl) songEl.volume = 0.9 * settings.volume;
+    }) },
   { label: "Loop songs", value: () => settings.autoLoop ? "ON" : "OFF",
     dec: () => updateSetting(() => { settings.autoLoop = !settings.autoLoop; }),
     inc: () => updateSetting(() => { settings.autoLoop = !settings.autoLoop; }) },
   { label: "Play next", value: () => settings.autoNext ? "ON" : "OFF",
     dec: () => updateSetting(() => { settings.autoNext = !settings.autoNext; }),
     inc: () => updateSetting(() => { settings.autoNext = !settings.autoNext; }) }
-];
+  ];
+  rows.forEach((r, i) => {           // wrap so any change marks its row as hot
+    const dec = r.dec, inc = r.inc;
+    r.dec = () => { FLASH.row = i; FLASH.t = Date.now(); dec(); };
+    r.inc = () => { FLASH.row = i; FLASH.t = Date.now(); inc(); };
+  });
+  return rows;
+};
 
 function drawTitle() {
   if (state.started) return;
@@ -1094,22 +1116,27 @@ function drawTitle() {
   } else {
     drawText("SETTINGS", 40, 46, "#fff");
     const rows = SETTING_ROWS();
-    let y = 86;
+    let y = 80;
     for (let i = 0; i < rows.length; i++) {
       const sel = i === state.menuSel;
       drawText(rows[i].label, 46, y, sel ? "#ff6b6b" : "#fff");
-      if (sel) { ctx.fillStyle = "#ff6b6b"; ctx.fillRect(38, y + 1, 6, 8); }
+      if (sel) drawSoul(40, y + 6, 1);          // the SOUL picks, as it should
       drawButton(190, y - 2, 26, "<", sel); addMenuBtn(190, y - 2, 26, rows[i].dec);
-      drawText(rows[i].value(), 226, y, "#fff");
+      const hot = FLASH.row === i && Date.now() - FLASH.t < 350;
+      drawText(rows[i].value(), 226, y, hot ? "#ffd94a" : "#fff");
+      if (rows[i].label === "Piano Kris") {     // live preview of the arm sprite
+        const arm = pal("puppetLarm");
+        if (arm) ctx.drawImage(arm, 2 * 34, 0, 34, 34, 226 + textWidth(rows[i].value()) + 12, y - 13, 34, 34);
+      }
       drawButton(400, y - 2, 26, ">", sel); addMenuBtn(400, y - 2, 26, rows[i].inc);
-      y += 30;
+      y += 26;
     }
     drawText("Walk code: " + WALK_MODES[settings.walkMode].hint, 46, y + 4, "#aaa");
-    drawText("Animation: " + ANIM_MODES[settings.animMode].hint, 46, y + 20, "#aaa");
-    drawText("LOWER always keeps spr_kris_piano_full.", 46, y + 36, "#aaa");
-    drawText("Play next rolls into the next song; Loop wraps the set.", 46, y + 52, "#aaa");
-    drawButton(140, y + 76, 100, "BACK", state.menuSel === rows.length);
-    addMenuBtn(140, y + 76, 100, () => { state.menu = "title"; state.menuSel = 0; });
+    drawText("Animation: " + ANIM_MODES[settings.animMode].hint, 46, y + 18, "#aaa");
+    drawText("LOWER always keeps spr_kris_piano_full.", 46, y + 32, "#aaa");
+    drawText("Play next rolls into the next song; Loop wraps the set.", 46, y + 46, "#aaa");
+    drawButton(140, y + 66, 100, "BACK", state.menuSel === rows.length);
+    addMenuBtn(140, y + 66, 100, () => { state.menu = "title"; state.menuSel = 0; });
   }
 }
 
@@ -1135,6 +1162,7 @@ function handleMenuKeys() {
   else if (k === "arrowdown" || k === "s") { state.menuSel = (state.menuSel + 1) % n; playSound(cursorEl, 0.5); }
   else if (state.menuSel < rows.length && (k === "arrowleft" || k === "a")) { rows[state.menuSel].dec(); playSound(cursorEl, 0.5); }
   else if (state.menuSel < rows.length && (k === "arrowright" || k === "d" || k === "z" || k === "enter" || k === " ")) { rows[state.menuSel].inc(); playSound(cursorEl, 0.5); }
+  else if (k === "b") { state.menu = "title"; state.menuSel = 0; playSound(cursorEl, 0.5); }   // B opened this; B closes it
   else if (k === "escape" || k === "backspace" || (state.menuSel === rows.length && (k === "z" || k === "enter" || k === " "))) {
     state.menu = "title"; state.menuSel = 0; playSound(cursorEl, 0.5);
   }
