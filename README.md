@@ -129,24 +129,14 @@ out, and nothing else in the game ever does.
 
 ### The interface
 
-Deltarune's light world is authored at **320×240** and blown up 2×, which is
-the same pixel scale the room art is drawn at — so the whole interface lives
-in its own 320×180 space and is scaled by that same 2. Drawing it at 1× was
-what made it look undersized next to the room.
+The title screen, settings, song list and piano HUD are the prototype's own
+plain styling, drawn at 1x over the 2x room.
 
-The text box is built the way `obj_dialoguer/Draw_0.gml` builds it: a white
-rectangle, then a black one inset 3px on every side. Square corners, white
-text, 18px between lines, and the page is word-wrapped up front so a word
-never hops down a row mid-type. The SOUL cursor is the real `spr_heartsmall`,
-the logo is the cracked `DELTARUNE` mark, and the song list, settings and HUD
-panels are all the same white-on-black box.
-
-The `fnt_main` bitmap font (8bitoperator JVE) is tinted per colour on demand,
-so menu text can pick up the yellow highlight Deltarune uses for a selection.
-
-One addition that isn't from the game: while Kris plays, the HUD shows a
-twelve-cell keyboard — six for the left hand's positions, six for the right —
-lighting up as the puppet puts a key down. It is the performance string, drawn.
+The text box is the exception: it is the Deltarune box, drawn at its own scale
+with its own corner pieces, and it is the one piece of interface that is meant
+to look like the game. `drawText` tints `fnt_main` (8bitoperator JVE) per
+colour on demand, and a page is word-wrapped up front so a word never hops down
+a row part-way through typing.
 
 ## Songs
 

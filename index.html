@@ -77,10 +77,12 @@ const CAMERA = { x: 0, y: 0, tx: 0, ty: 0, zoom: 1 };
 /* ---------------- UI metrics ---------------- */
 const UI_SCALE = 2;
 const UW = W / UI_SCALE, UH = H / UI_SCALE;   // 320 x 180
-// This is the original Deltarune dark-world dialog footprint. The 0.75 scale
-// offsets this project's 4/3 final canvas enlargement, producing 592x166px.
-const DARKBOX = { x0: 24, y0: H - 168, x1: W - 24, y1: H - 2 };
-const DARKBOX_SCALE = 0.75;
+// The original Deltarune dark-world dialog footprint, laid out directly at the
+// size it is drawn. The border tiles are pixel art, so the box is never scaled
+// by a fraction - everything below lands on whole canvas pixels.
+const DARKBOX = { x0: 26, y0: H - 142, x1: W - 26, y1: H - 14 };
+// obj_writer text metrics: 2x font, one bullet column, three visible lines.
+const DLG_TEXT = { x: 26 + 34, y: H - 142 + 30, line: 32, scale: 2, indent: 24 };
 // Original Chapter 5 dark-world textbox tiles, carried over from EggRoom.
 const DARKBOX_ASSETS = {
   top: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAQCAYAAADXnxW3AAAAI0lEQVQI12NwcPjPwMTAwIBEMPz///8/hDtv8VGICJoSnAQA5xoIm0HpxWAAAAAASUVORK5CYII=",
@@ -95,6 +97,26 @@ function drBox(x, y, w, h) {
   ctx.fillRect(x, y, w, h);
   ctx.fillStyle = "#000000";
   ctx.fillRect(x + 3, y + 3, w - 6, h - 6);
+}
+function roundRect(c, x, y, w, h, r) {
+  c.beginPath();
+  c.moveTo(x + r, y);
+  c.lineTo(x + w - r, y); c.quadraticCurveTo(x + w, y, x + w, y + r);
+  c.lineTo(x + w, y + h - r); c.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  c.lineTo(x + r, y + h); c.quadraticCurveTo(x, y + h, x, y + h - r);
+  c.lineTo(x, y + r); c.quadraticCurveTo(x, y, x + r, y);
+  c.closePath();
+}
+function drawSoul(x, y, s) {
+  ctx.fillStyle = "#ff0000";
+  ctx.beginPath();
+  ctx.arc(x - 4 * s, y - 3 * s, 4 * s, 0, Math.PI * 2);
+  ctx.arc(x + 4 * s, y - 3 * s, 4 * s, 0, Math.PI * 2);
+  ctx.moveTo(x - 8 * s, y - 2 * s);
+  ctx.lineTo(x + 8 * s, y - 2 * s);
+  ctx.lineTo(x, y + 8 * s);
+  ctx.closePath();
+  ctx.fill();
 }
 function drawHeart(x, y) {
   if (img.heart) ctx.drawImage(img.heart, Math.round(x), Math.round(y));
@@ -119,7 +141,6 @@ const ASSETS = {
   note:     "assets/sfx/krispiano.wav",     // snd_krispiano, one note, pitched per key
   font:     "assets/fnt_main.png",
   heart:    "assets/heart.png",           // spr_heartsmall, the menu SOUL
-  logo:     "assets/logo.png",
   roomMus:  "assets/mus/room_noelle_house.ogg",
   blip:     "assets/sfx/blip.wav",
   cursor:   "assets/sfx/cursor.wav",
@@ -152,8 +173,8 @@ const SYNCED_SONG = "kris_piano_lower";
 // it always plays as the game plays it. The setting only governs the other
 // eight, which have no animation of their own.
 const ANIM_MODES = [
-  { id: "puppet", name: "Puppet",  hint: "The other eight use the puppet rig." },
-  { id: "baked",  name: "Baked",   hint: "The other eight stretch the baked sheet." }
+  { id: "puppet", name: "Puppet",  hint: "the other eight use obj_kris_pianopuppet" },
+  { id: "baked",  name: "Baked",   hint: "the other eight stretch spr_kris_piano_full" }
 ];
 function isSyncedSong(idx) { return SONGS[idx === undefined ? state.songIdx : idx].id === SYNCED_SONG; }
 function usePuppet() {
@@ -340,7 +361,7 @@ function updateDialogue() {
         DLG.pos += 2; DLG.timer = 0; DLG.pause = 30; break;
       }
       DLG.pos++; DLG.timer -= 1;
-      playSound(blipEl, 0.18);
+      if (ch !== " ") playSound(blipEl, 0.18);
     }
     if (DLG.pos >= DLG.page.text.length) DLG.typing = false;
   }
@@ -364,12 +385,15 @@ function countPauses() {
   }
   return n;
 }
-function wrapWords(text, maxW) {
+// Deltarune hangs wrapped lines under the text, not under the "* " bullet, so
+// continuation lines get a narrower budget and are drawn indented.
+function wrapWords(text, maxW, indentW = 0) {
   const lines = [];
   let line = "";
   for (const word of text.split(" ")) {
     const test = line.length ? line + " " + word : word;
-    if (textWidth(test) > maxW && line.length) { lines.push(line); line = word; }
+    const budget = lines.length ? maxW - indentW : maxW;
+    if (textWidth(test) > budget && line.length) { lines.push(line); line = word; }
     else line = test;
   }
   lines.push(line);
@@ -1078,8 +1102,9 @@ function drawOfficialDarkBox() {
   drawImageFlipped(c, x1 + 1 - 32, y1 + 1 - 32, 32, 32, true, true);
 }
 function drawOfficialChoices(options) {
-  const centersX = [155, 487, 321, 327];
-  const centersY = [DARKBOX.y0 + 81, DARKBOX.y0 + 81, DARKBOX.y0 + 41, DARKBOX.y0 + 120];
+  const midX = (DARKBOX.x0 + DARKBOX.x1) / 2, quarter = (DARKBOX.x1 - DARKBOX.x0) / 4;
+  const centersX = [Math.round(midX - quarter), Math.round(midX + quarter), Math.round(midX), Math.round(midX)];
+  const centersY = [DARKBOX.y0 + 72, DARKBOX.y0 + 72, DARKBOX.y0 + 40, DARKBOX.y0 + 104];
   for (let i = 0; i < options.length; i++) {
     const width = textWidth(options[i]) * 2;
     drawTextScaled(options[i], centersX[i] - width / 2, centersY[i] - 16,
@@ -1091,71 +1116,53 @@ function drawOfficialChoices(options) {
 }
 function drawDialogueBox() {
   if (!DLG.showing || !DLG.page) return;
-  const pivotX = (DARKBOX.x0 + DARKBOX.x1) / 2;
-  ctx.save();
-  ctx.translate(pivotX, DARKBOX.y1);
-  ctx.scale(DARKBOX_SCALE, DARKBOX_SCALE);
-  ctx.translate(-pivotX, -DARKBOX.y1);
   drawOfficialDarkBox();
   if (DLG.page.choices && !DLG.typing) {
     drawOfficialChoices(DLG.page.choices);
-  } else {
-    const lines = wrapWords(fullText(), (DARKBOX.x1 - 58 - 20) / 2);
-    let left = DLG.pos - countPauses();
-    for (let i = 0; i < Math.min(3, lines.length); i++) {
-      if (left <= 0) break;
-      const line = lines[i];
-      drawTextScaled(left >= line.length ? line : line.slice(0, left), 58, DARKBOX.y0 + 28 + i * 36, "#fff", 2);
-      left -= line.length + 1;
-    }
+    return;
   }
-  ctx.restore();
+  const { x, y, line: lineH, scale, indent } = DLG_TEXT;
+  const maxW = (DARKBOX.x1 - 34 - x) / scale;
+  const lines = wrapWords(fullText(), maxW, indent / scale);
+  let left = DLG.pos - countPauses();
+  for (let i = 0; i < Math.min(3, lines.length); i++) {
+    if (left <= 0) break;
+    const line = lines[i];
+    drawTextScaled(left >= line.length ? line : line.slice(0, left),
+                   x + (i ? indent : 0), y + i * lineH, "#fff", scale);
+    left -= line.length + 1;
+  }
 }
-
-/* ---------------- song list ----------------
-   Styled as a Deltarune menu: the same white-on-black box, the SOUL for a
-   cursor, and a window that scrolls when the list is taller than the screen. */
-const PICK = { rows: 7, rowH: 15, top: 0 };
 
 function drawPicker() {
   if (!state.pickerOpen) return;
-  const n = pickerRows();
-  const bw = 244, bh = 27 + PICK.rows * PICK.rowH + 36;
-  const bx = Math.round((UW - bw) / 2), by = Math.round((UH - bh) / 2);
+  const rowH = 22, bw = 300, bh = pickerRows() * rowH + 82;
+  const bx = (W - bw) / 2, by = (H - bh) / 2;
   ctx.fillStyle = "rgba(0,0,0,0.55)";
-  ctx.fillRect(0, 0, UW, UH);
-  drBox(bx, by, bw, bh);
-  drawText("WHAT WILL KRIS PLAY?", bx + 16, by + 9, "#fff");
+  ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = "#000";
+  roundRect(ctx, bx, by, bw, bh, 8); ctx.fill();
+  ctx.strokeStyle = "#fff"; ctx.lineWidth = 2;
+  roundRect(ctx, bx, by, bw, bh, 8); ctx.stroke();
+  drawText("WHAT WILL KRIS PLAY?", bx + 20, by + 12, "#fff");
 
-  // keep the cursor inside the window
-  PICK.top = Math.max(0, Math.min(n - PICK.rows, Math.min(PICK.top, state.pickerSel - 1)));
-  if (state.pickerSel >= PICK.top + PICK.rows) PICK.top = state.pickerSel - PICK.rows + 1;
-  if (state.pickerSel < PICK.top) PICK.top = state.pickerSel;
-
-  for (let k = 0; k < PICK.rows; k++) {
-    const i = PICK.top + k;
-    if (i >= n) break;
+  for (let i = 0; i < pickerRows(); i++) {
     const sel = i === state.pickerSel;
-    const y = by + 27 + k * PICK.rowH;
-    const col = sel ? "#ffe000" : "#fff";
+    const y = by + 34 + i * rowH;
     if (i === FREE_PLAY_ROW) {
-      drawText("PLAY IT YOURSELF", bx + 30, y, col);
-      drawText("12 KEYS", bx + bw - 70, y, "#8c8c8c");
+      drawText("PLAY IT YOURSELF", bx + 34, y, sel ? "#ff6b6b" : "#fff");
+      drawText("12 keys", bx + bw - 66, y, "#aaa");
     } else {
       const song = SONGS[i - 1];
-      drawText(song.name, bx + 30, y, col);
+      drawText(song.name, bx + 34, y, sel ? "#ff6b6b" : "#fff");
       const e = ENV[song.id];
-      if (e) drawText(fmtTime(e.dur), bx + bw - 58, y, "#8c8c8c");
-      const mark = song.id === SYNCED_SONG ? "+" : recordings[song.id] ? "R"
-                 : state.played[song.id] ? "*" : "";
-      if (mark) drawText(mark, bx + 20, y, sel ? "#ffe000" : "#8c8c8c");
+      if (e) drawText(fmtTime(e.dur), bx + bw - 54, y, "#aaa");
+      if (song.id === SYNCED_SONG) drawText("+", bx + 22, y, sel ? "#ff6b6b" : "#aaa");
+      else if (recordings[song.id]) drawText("R", bx + 22, y, sel ? "#ff6b6b" : "#aaa");
+      else if (state.played[song.id]) drawText("*", bx + 22, y, "#aaa");
     }
-    if (sel) drawHeart(bx + 9, y + 3);
+    if (sel) drawSoul(bx + 14, y + 7, 0.7);
   }
-  // scroll marks
-  if (PICK.top > 0) drawText("^", bx + bw - 22, by + 27, "#8c8c8c");
-  if (PICK.top + PICK.rows < n) drawText("v", bx + bw - 22, by + 27 + (PICK.rows - 1) * PICK.rowH, "#8c8c8c");
-
   let sub;
   if (state.pickerSel === FREE_PLAY_ROW) sub = "Kris plays what you play.";
   else {
@@ -1164,9 +1171,8 @@ function drawPicker() {
         : recordings[song.id] ? "Your recording."
         : "Generated from the track.";
   }
-  const fy = by + 27 + PICK.rows * PICK.rowH + 4;
-  drawText(sub, bx + 16, fy, "#8c8c8c");
-  drawText("Z  SELECT      X  BACK", bx + 16, fy + 14, "#8c8c8c");
+  drawText(sub, bx + 20, by + bh - 42, "#aaa");
+  drawText("Z  select      X  back", bx + 20, by + bh - 22, "#aaa");
 }
 
 function fmtTime(sec) {
@@ -1175,59 +1181,35 @@ function fmtTime(sec) {
 }
 
 function pianoHintLine() {
-  if (REC.mode === 1) return "W  STOP RECORDING      ESC  GET UP";
-  if (state.freePlay)  return "ZXCVBN  LEFT   POIUYT  RIGHT   W  RECORD   ESC  UP";
-  if (isSyncedSong())  return "X  STAND      C  ANOTHER SONG      L  LOOP " + (settings.autoLoop ? "ON" : "OFF");
-  const rec = recordings[SONGS[state.songIdx].id] ? "   R  DROP" : "";
-  return "X  STAND   C  SONG   W  RECORD   L  LOOP " + (settings.autoLoop ? "ON" : "OFF") + rec;
+  if (REC.mode === 1) return "W  stop recording      ESC  get up      (Kris is following you)";
+  if (state.freePlay) return "Z X C V B N  left      P O I U Y T  right      W  record      ESC  get up";
+  if (isSyncedSong()) {
+    return "X  stand up      C  another song      L  loop: " +
+           (settings.autoLoop ? "ON" : "OFF") + "      (LOWER uses the game's own animation)";
+  }
+  const rec = recordings[SONGS[state.songIdx].id] ? "      R  drop recording" : "";
+  return "X  stand up      C  another song      W  record      L  loop: " +
+         (settings.autoLoop ? "ON" : "OFF") + rec;
 }
-
-// a small Deltarune-style panel: white border, black fill, white text
-function drawPanel(x, y, w, h) { drBox(x, y, w, h); }
 
 function drawHintBar(hint) {
-  const w = textWidth(hint) + 24;
-  drawPanel(8, UH - 26, w, 22);
-  drawText(hint, 20, UH - 20, "#fff");
-}
-
-// Twelve cells, one per hand position: the six the left hand can reach and the
-// six the right hand can, lit as the puppet puts a key down. It is the same
-// index the performance strings carry, drawn.
-function drawKeyStrip(x, y, w) {
-  const cells = 12, gap = 1;
-  const cw = Math.floor((w - gap * (cells - 1)) / cells);
-  const lCell = PUP.lDown ? 5 - PUP.l : -1;          // position 5 sits furthest left
-  const rCell = PUP.rDown ? 6 + PUP.r : -1;
-  for (let i = 0; i < cells; i++) {
-    const cx = x + i * (cw + gap);
-    const lit = i === lCell || i === rCell;
-    ctx.fillStyle = lit ? "#ffe000" : (i < 6 ? "#585858" : "#6e6e6e");
-    ctx.fillRect(cx, lit ? y - 1 : y, cw, lit ? 8 : 7);
-  }
-}
-
-function drawNowPlaying(title, right, prog, colour, keys) {
-  const w = 132, x = UW - w - 8, y = 8;
-  const h = keys ? 46 : 34;
-  drawPanel(x, y, w, h);
-  drawText(title, x + 11, y + 8, colour || "#fff");
-  if (right) drawText(right, x + w - 11 - textWidth(right), y + 8, "#8c8c8c");
-  if (prog >= 0) {
-    ctx.fillStyle = "#4a4a4a";
-    ctx.fillRect(x + 11, y + 23, w - 22, 3);
-    ctx.fillStyle = colour || "#ffe000";
-    ctx.fillRect(x + 11, y + 23, Math.round((w - 22) * Math.min(1, prog)), 3);
-  }
-  if (keys) drawKeyStrip(x + 11, y + (prog >= 0 ? 32 : 26), w - 22);
+  const hw = textWidth(hint) + 24;
+  ctx.fillStyle = "rgba(0,0,0,0.62)";
+  roundRect(ctx, 12, H - 34, hw, 24, 5); ctx.fill();
+  drawText(hint, 24, H - 28, "#fff");
 }
 
 function drawHud() {
+  const bw = 232, bx = W - bw - 14, by = 12;
   if (state.seated && state.freePlay) {
-    drawNowPlaying(REC.mode === 1 ? "RECORDING" : "FREE PLAY",
-                   REC.mode === 1 ? fmtTime(REC.frame / 30) : "",
-                   -1,
-                   REC.mode === 1 ? "#ff4040" : "#ffe000", true);
+    ctx.fillStyle = "rgba(0,0,0,0.62)";
+    roundRect(ctx, bx, by, bw, 42, 6); ctx.fill();
+    drawText(REC.mode === 1 ? "RECORDING" : "FREE PLAY", bx + 12, by + 7, REC.mode === 1 ? "#ff6b6b" : "#fff");
+    drawText(REC.mode === 1 ? fmtTime(REC.frame / 30) : "12 keys", bx + bw - 74, by + 7, "#aaa");
+    ctx.fillStyle = "#3a3a3a";
+    ctx.fillRect(bx + 12, by + 26, bw - 24, 4);
+    ctx.fillStyle = (PUP.lDown || PUP.rDown) ? "#ffd94a" : "#5a5a5a";
+    ctx.fillRect(bx + 12, by + 26, bw - 24, 4);
     if (!state.pickerOpen && !DLG.showing) drawHintBar(pianoHintLine());
     return;
   }
@@ -1235,15 +1217,20 @@ function drawHud() {
     const s = SONGS[state.songIdx];
     const dur = (ENV[s.id] && ENV[s.id].dur) || 1;
     const pos = songEl ? songEl.currentTime : 0;
-    drawNowPlaying(s.name, fmtTime(pos) + "/" + fmtTime(dur), pos / dur,
-                   REC.mode === 1 ? "#ff4040" : s.id === SYNCED_SONG ? "#ffe000" : "#8cd88c",
-                   usePuppet());
+    ctx.fillStyle = "rgba(0,0,0,0.62)";
+    roundRect(ctx, bx, by, bw, 42, 6); ctx.fill();
+    drawText(s.name, bx + 12, by + 7, "#fff");
+    drawText(fmtTime(pos) + " / " + fmtTime(dur), bx + bw - 74, by + 7, "#aaa");
+    ctx.fillStyle = "#3a3a3a";
+    ctx.fillRect(bx + 12, by + 26, bw - 24, 4);
+    ctx.fillStyle = REC.mode === 1 ? "#ff6b6b" : s.id === SYNCED_SONG ? "#ffd94a" : "#9fd8a0";
+    ctx.fillRect(bx + 12, by + 26, (bw - 24) * Math.min(1, pos / dur), 4);
+    if (REC.mode === 1) drawText("REC", bx + bw - 108, by + 7, "#ff6b6b");
     if (!state.pickerOpen && !DLG.showing) drawHintBar(pianoHintLine());
   } else if (state.started && !state.seated && !DLG.showing && !state.pickerOpen && nearPiano()) {
-    drawHintBar("Z  SIT DOWN AT THE PIANO");
+    drawHintBar("Z  sit down at the piano");
   }
 }
-
 
 // glyph table from the game's fnt_main (8bitoperator JVE), inlined so the
 // prototype works straight from file:// without fetch()
@@ -1347,75 +1334,73 @@ const GLYPH_CSV = `32;79;81;3;16;3;0
 
 /* ---------------- title / settings ---------------- */
 const menuButtons = [];
-function addMenuBtn(x, y, w, action) { menuButtons.push({ x, y, w, h: 16, action }); }
+function addMenuBtn(x, y, w, action) { menuButtons.push({ x, y, w, h: 22, action }); }
+function drawButton(x, y, w, label, hi) {
+  ctx.fillStyle = hi ? "#ffffff" : "#222";
+  roundRect(ctx, x, y, w, 22, 5); ctx.fill();
+  ctx.strokeStyle = "#fff"; ctx.lineWidth = 1;
+  roundRect(ctx, x, y, w, 22, 5); ctx.stroke();
+  drawText(label, x + 8, y + 5, hi ? "#000" : "#fff");
+}
 
 const SETTING_ROWS = () => [
-  { label: "WALK SPEED", value: () => settings.walkSpeed.toFixed(1),
+  { label: "Walk speed", value: () => settings.walkSpeed.toFixed(1) + " px/f @60",
     dec: () => updateSetting(() => { settings.walkSpeed = Math.max(0.5, +(settings.walkSpeed - 0.1).toFixed(1)); }),
     inc: () => updateSetting(() => { settings.walkSpeed = Math.min(4, +(settings.walkSpeed + 0.1).toFixed(1)); }) },
-  { label: "WALK CODE", value: () => WALK_MODES[settings.walkMode].name,
+  { label: "Walk code", value: () => WALK_MODES[settings.walkMode].name,
     dec: () => updateSetting(() => { settings.walkMode = (settings.walkMode + 1) % WALK_MODES.length; }),
     inc: () => updateSetting(() => { settings.walkMode = (settings.walkMode + 1) % WALK_MODES.length; }) },
-  { label: "ANIMATION", value: () => ANIM_MODES[settings.animMode].name,
+  { label: "Animation", value: () => ANIM_MODES[settings.animMode].name,
     dec: () => updateSetting(() => { settings.animMode = (settings.animMode + ANIM_MODES.length - 1) % ANIM_MODES.length; }),
     inc: () => updateSetting(() => { settings.animMode = (settings.animMode + 1) % ANIM_MODES.length; }) },
-  { label: "PIANO KRIS", value: () => PALETTES[settings.palette].name,
+  { label: "Piano Kris", value: () => PALETTES[settings.palette].name,
     dec: () => updateSetting(() => { settings.palette = (settings.palette + PALETTES.length - 1) % PALETTES.length; }),
     inc: () => updateSetting(() => { settings.palette = (settings.palette + 1) % PALETTES.length; }) },
-  { label: "LOOP SONGS", value: () => settings.autoLoop ? "ON" : "OFF",
+  { label: "Loop songs", value: () => settings.autoLoop ? "ON" : "OFF",
     dec: () => updateSetting(() => { settings.autoLoop = !settings.autoLoop; }),
     inc: () => updateSetting(() => { settings.autoLoop = !settings.autoLoop; }) }
 ];
-
-function centreText(str, y, colour) { drawText(str, Math.round((UW - textWidth(str)) / 2), y, colour); }
 
 function drawTitle() {
   if (state.started) return;
   menuButtons.length = 0;
   ctx.fillStyle = "#000";
-  ctx.fillRect(0, 0, UW, UH);
-
+  ctx.fillRect(0, 0, W, H);
   if (state.menu === "title") {
-    if (img.logo) ctx.drawImage(img.logo, Math.round((UW - 130) / 2), 16, 130, 29);
-    // spr_kris_piano_full, looping at its own rate, as the hero image
+    // title art: spr_kris_piano_full, looping at its own rate
     const sheet = pal("pianoFull");
     if (sheet) {
-      const c = PIANO_SHEET.cell;
       const f = Math.floor(Date.now() / 80) % PIANO_SHEET.frames;
+      const c = PIANO_SHEET.cell;
       ctx.drawImage(sheet, (f % PIANO_SHEET.cols) * c, Math.floor(f / PIANO_SHEET.cols) * c, c, c,
-                    Math.round((UW - c) / 2), 50, c, c);
+                    W - 214, 92, c * 3, c * 3);
     }
-    centreText("KRIS AT THE PIANO", 108, "#fff");
-    centreText("room_lw_noellehouse_kitchen", 124, "#8c8c8c");
-    centreText("obj_ch4_DCA09_piano  /  obj_kris_pianopuppet", 136, "#8c8c8c");
-    if ((Math.floor(Date.now() / 400) % 2) === 0) centreText("PRESS Z TO BEGIN", 150, "#ffe000");
-    centreText("B  SETTINGS", 164, "#8c8c8c");
+    drawText("KRIS AT THE PIANO", 40, 78, "#fff");
+    drawText("room_lw_noellehouse_kitchen", 40, 100, "#aaa");
+    drawText("obj_ch4_DCA09_piano  /  obj_kris_pianopuppet", 40, 116, "#aaa");
+    drawText("Arrows or WASD to walk.  Shift or X to run.", 40, 162, "#fff");
+    drawText("Z to look at things.  Sit at the piano, pick a song.", 40, 180, "#fff");
+    drawText("Or play it yourself, and record what you play.", 40, 198, "#fff");
+    if ((Math.floor(Date.now() / 400) % 2) === 0) drawText("Press Z to begin", 40, 232, "#fff");
+    drawText("Press B for settings", 40, 252, "#aaa");
   } else {
+    drawText("SETTINGS", 40, 46, "#fff");
     const rows = SETTING_ROWS();
-    const bw = 268, bh = 28 + rows.length * 18 + 51;
-    const bx = Math.round((UW - bw) / 2), by = Math.round((UH - bh) / 2);
-    drBox(bx, by, bw, bh);
-    drawText("SETTINGS", bx + 16, by + 9, "#fff");
+    let y = 86;
     for (let i = 0; i < rows.length; i++) {
       const sel = i === state.menuSel;
-      const y = by + 28 + i * 18;
-      drawText(rows[i].label, bx + 28, y, sel ? "#ffe000" : "#fff");
-      if (sel) drawHeart(bx + 12, y + 3);
-      const v = rows[i].value();
-      const vx = bx + bw - 30 - textWidth(v);
-      drawText(v, vx, y, "#fff");
-      drawText("<", vx - 14, y, sel ? "#ffe000" : "#4a4a4a");
-      drawText(">", bx + bw - 22, y, sel ? "#ffe000" : "#4a4a4a");
-      addMenuBtn(vx - 16, y - 2, 12, rows[i].dec);
-      addMenuBtn(bx + bw - 24, y - 2, 12, rows[i].inc);
+      drawText(rows[i].label, 46, y, sel ? "#ff6b6b" : "#fff");
+      if (sel) { ctx.fillStyle = "#ff6b6b"; ctx.fillRect(38, y + 1, 6, 8); }
+      drawButton(190, y - 2, 26, "<", sel); addMenuBtn(190, y - 2, 26, rows[i].dec);
+      drawText(rows[i].value(), 226, y, "#fff");
+      drawButton(400, y - 2, 26, ">", sel); addMenuBtn(400, y - 2, 26, rows[i].inc);
+      y += 30;
     }
-    const hy = by + 26 + rows.length * 18;
-    drawText(ANIM_MODES[settings.animMode].hint, bx + 16, hy, "#8c8c8c");
-    drawText("LOWER always keeps its own sprite.", bx + 16, hy + 12, "#8c8c8c");
-    const sel = state.menuSel === rows.length;
-    drawText("BACK", bx + 30, hy + 28, sel ? "#ffe000" : "#fff");
-    if (sel) drawHeart(bx + 14, hy + 31);
-    addMenuBtn(bx + 26, hy + 26, 40, () => { state.menu = "title"; state.menuSel = 0; });
+    drawText("Walk code: " + WALK_MODES[settings.walkMode].hint, 46, y + 4, "#aaa");
+    drawText("Animation: " + ANIM_MODES[settings.animMode].hint, 46, y + 20, "#aaa");
+    drawText("LOWER always keeps spr_kris_piano_full.", 46, y + 36, "#aaa");
+    drawButton(140, y + 56, 100, "BACK", state.menuSel === rows.length);
+    addMenuBtn(140, y + 56, 100, () => { state.menu = "title"; state.menuSel = 0; });
   }
 }
 
@@ -1507,18 +1492,12 @@ function frame(ts) {
     drawRoom();
     ctx.restore();
     drawRoomDim();
-    ctx.save();
-    ctx.scale(UI_SCALE, UI_SCALE);
     drawHud();
     drawPicker();
-    ctx.restore();
     // Dialogue has its own native scale; do not apply the HUD/menu 2x scale.
     drawDialogueBox();
   }
-  ctx.save();
-  ctx.scale(UI_SCALE, UI_SCALE);
   drawTitle();
-  ctx.restore();
   if (state.fade > 0) {
     ctx.fillStyle = "rgba(0,0,0," + state.fade + ")";
     ctx.fillRect(0, 0, W, H);
@@ -1555,7 +1534,6 @@ async function boot() {
     img[k] = await loadImage(ASSETS[k]);
   }
   img.heart     = await loadImage(ASSETS.heart);
-  img.logo      = await loadImage(ASSETS.logo);
   img.font      = await loadImage(ASSETS.font);
   img.darkboxTop    = await loadImage(DARKBOX_ASSETS.top);
   img.darkboxLeft   = await loadImage(DARKBOX_ASSETS.left);
@@ -1577,9 +1555,8 @@ async function boot() {
 
   canvas.addEventListener("click", e => {
     const r = canvas.getBoundingClientRect();
-    const sc = RENDER_SCALE * UI_SCALE;
-    handleMenuClick((e.clientX - r.left) * (canvas.width / r.width) / sc,
-                    (e.clientY - r.top) * (canvas.height / r.height) / sc);
+    handleMenuClick((e.clientX - r.left) * (canvas.width / r.width) / RENDER_SCALE,
+                    (e.clientY - r.top) * (canvas.height / r.height) / RENDER_SCALE);
   });
 
   // Q returns to the title from anywhere in the room
