@@ -12,6 +12,7 @@
 </head>
 <body>
 <script src="assets/performances.js"></script>
+<script src="assets/song_backgrounds.js"></script>
 <canvas id="game" width="854" height="480" role="img" aria-label="Kris at a grand piano on a black stage, a playable pixel-art scene"></canvas>
 <script>
 "use strict";
@@ -524,6 +525,7 @@ function startSong(idx) {
   stopSong(false);
   state.songIdx = idx;
   const s = SONGS[idx];
+  SongBackgrounds.setSong(s.id);
   songEl = makeEl(s.file, songRepeats());
   songEl.volume = 0.9 * settings.volume;
   songEl.play().catch(() => {});
@@ -535,14 +537,14 @@ function startSong(idx) {
   state.played[s.id] = true;
 }
 
-function stopSong() {
+function stopSong(clearBackground = true) {
   if (songEl) { songEl.pause(); songEl.currentTime = 0; songEl = null; }
   state.playing = false;
+  if (clearBackground) SongBackgrounds.setSong(null);
 }
 
 function finishSong() {
   if (!state.seated) { stopSong(); return; }   // Kris already got up
-  stopSong();
   if (settings.autoNext) {
     const next = state.songIdx + 1;
     if (next < SONGS.length) { sitDown(next); return; }        // roll on
@@ -680,7 +682,10 @@ function recTick() {
 function toggleRecorder() {
   if (REC.mode === 0) {
     REC.mode = 1; REC.l = ""; REC.r = ""; REC.frame = 0;
-    if (songEl) songEl.currentTime = 0;
+    if (songEl) {
+      songEl.currentTime = 0;
+      SongBackgrounds.setSong(SONGS[state.songIdx].id, true);
+    }
     playSound(cursorEl, 0.7);
   } else if (REC.mode === 1) {
     REC.mode = 2;
@@ -813,10 +818,11 @@ function drawWalkingKris() {
   ctx.drawImage(spr, Math.round(KRIS.x) - spr.width / 2, Math.round(KRIS.y) - spr.height);
 }
 
-// Nothing but black behind the piano, exactly as in the title card.
+// Song scenes stay behind Kris and the piano, leaving the stage black at rest.
 function drawRoom() {
   ctx.fillStyle = "#000";
   ctx.fillRect(0, 0, ROOM_W, ROOM_H);
+  SongBackgrounds.draw(ctx, true);
 
   // Kris is behind the piano while walking above it, in front of it below.
   const krisDepth = state.seated ? PIANO.y + 96 : KRIS.y;
@@ -1213,6 +1219,7 @@ function frame(ts) {
     updatePiano();
     updateCamera();
   }
+  SongBackgrounds.update(speedScale / 60);
 
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.fillStyle = "#000";
@@ -1252,6 +1259,7 @@ function loadImage(src) {
 
 async function boot() {
   loadSettings();
+  const backgroundsReady = SongBackgrounds.preload();
   for (const dir of ["d", "u", "l", "r"]) {
     for (let i = 0; i < 4; i++) krisWalk[dir].push(await loadImage("assets/kris/" + dir + "_" + i + ".png"));
   }
@@ -1268,6 +1276,7 @@ async function boot() {
   cursorEl = makeEl(ASSETS.cursor, false);
   noteEl   = makeEl(ASSETS.note, false);
   loadRecordings();
+  await backgroundsReady;
 
   canvas.addEventListener("click", e => {
     const r = canvas.getBoundingClientRect();
@@ -1301,6 +1310,7 @@ function applyDebugQuery() {
     if (q.has("mute")) {
       state.playing = false;
       state.frame = +(q.get("frame") || 0);
+      SongBackgrounds.setSong(SONGS[idx].id);
     } else {
       sitDown(idx);
     }
@@ -1314,6 +1324,7 @@ function applyDebugQuery() {
   if (q.has("rec")) { REC.mode = 1; REC.frame = +(q.get("rec") || 0); }
   if (q.has("picker")) { state.pickerOpen = true; state.pickerSel = +(q.get("picker") || 0); }
   if (q.has("menu")) { state.started = false; state.menu = "settings"; state.menuSel = +(q.get("menu") || 0); }
+  if (q.has("warm")) for (let i = 0; i < +q.get("warm") * 60; i++) SongBackgrounds.update(1 / 60);
   updateCamera();
 }
 
