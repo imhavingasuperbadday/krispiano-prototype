@@ -207,6 +207,7 @@ const settings = {
   animMode: 0,
   autoLoop: false,  // wrap around after the last song / repeat a single song
   autoNext: true,   // when a song ends, roll straight into the next one
+  sceneSprites: true,
   volume: 0.9       // master multiplier on every sound
 };
 const SETTINGS_KEY = "krispiano.settings.v1";
@@ -220,6 +221,7 @@ function loadSettings() {
     if (Number.isInteger(s.animMode)) settings.animMode = Math.max(0, Math.min(ANIM_MODES.length - 1, s.animMode));
     if (typeof s.autoLoop === "boolean") settings.autoLoop = s.autoLoop;
     if (typeof s.autoNext === "boolean") settings.autoNext = s.autoNext;
+    if (typeof s.sceneSprites === "boolean") settings.sceneSprites = s.sceneSprites;
     if (Number.isFinite(s.volume)) settings.volume = Math.max(0, Math.min(1, +s.volume));
   } catch (_) { /* storage may be unavailable; the defaults are fine */ }
 }
@@ -758,7 +760,9 @@ function handleInteract() {
 // Y shows/hides the UI, T shows/hides Kris. Both back off while the piano
 // keys are live - in free play and while recording, Y/T are right-hand notes.
 function handleToggles() {
-  if (!state.started || keysAreLive()) return;
+  if (!state.started) return;
+  if (pressed("g")) { updateSetting(() => { settings.sceneSprites = !settings.sceneSprites; }); playSound(cursorEl, 0.4); }
+  if (keysAreLive()) return;
   if (pressed("y")) { state.hideUI = !state.hideUI; playSound(cursorEl, 0.4); }
   if (pressed("t")) { state.hideKris = !state.hideKris; playSound(cursorEl, 0.4); }
 }
@@ -822,7 +826,7 @@ function drawWalkingKris() {
 function drawRoom() {
   ctx.fillStyle = "#000";
   ctx.fillRect(0, 0, ROOM_W, ROOM_H);
-  SongBackgrounds.draw(ctx, true);
+  SongBackgrounds.draw(ctx, settings.sceneSprites);
 
   // Kris is behind the piano while walking above it, in front of it below.
   const krisDepth = state.seated ? PIANO.y + 96 : KRIS.y;
@@ -1087,7 +1091,10 @@ const SETTING_ROWS = () => {
     inc: () => updateSetting(() => { settings.autoLoop = !settings.autoLoop; }) },
   { label: "Play next", value: () => settings.autoNext ? "ON" : "OFF",
     dec: () => updateSetting(() => { settings.autoNext = !settings.autoNext; }),
-    inc: () => updateSetting(() => { settings.autoNext = !settings.autoNext; }) }
+    inc: () => updateSetting(() => { settings.autoNext = !settings.autoNext; }) },
+  { label: "Scene sprites", value: () => settings.sceneSprites ? "ON" : "OFF",
+    dec: () => updateSetting(() => { settings.sceneSprites = !settings.sceneSprites; }),
+    inc: () => updateSetting(() => { settings.sceneSprites = !settings.sceneSprites; }) }
   ];
   rows.forEach((r, i) => {           // wrap so any change marks its row as hot
     const dec = r.dec, inc = r.inc;
@@ -1103,8 +1110,8 @@ function drawTitle() {
   ctx.fillStyle = "#000";
   ctx.fillRect(0, 0, W, H);
   if (state.menu === "title") {
-    // title art: spr_kris_piano_full, looping at its own rate
-    const sheet = pal("pianoFull");
+    // Keep the title portrait in the sprite's original Dark World colours.
+    const sheet = img.pianoFull;
     if (sheet) {
       const f = Math.floor(Date.now() / 80) % PIANO_SHEET.frames;
       const c = PIANO_SHEET.cell;
@@ -1117,12 +1124,13 @@ function drawTitle() {
     drawText("Arrows or WASD to walk.  Shift or X to run.", 40, 162, "#fff");
     drawText("Face the keys and press Z, then pick a song.", 40, 180, "#fff");
     drawText("Or play it yourself, and record what you play.", 40, 198, "#fff");
+    drawText("G: sprites", 40, 216, "#aaa");
     if ((Math.floor(Date.now() / 400) % 2) === 0) drawText("Press Z to begin", 40, 232, "#fff");
     drawText("Press B for settings", 40, 252, "#aaa");
   } else {
-    drawText("SETTINGS", 40, 46, "#fff");
+    drawText("SETTINGS", 40, 27, "#fff");
     const rows = SETTING_ROWS();
-    let y = 80;
+    let y = 55;
     for (let i = 0; i < rows.length; i++) {
       const sel = i === state.menuSel;
       drawText(rows[i].label, 46, y, sel ? "#ff6b6b" : "#fff");
@@ -1135,7 +1143,7 @@ function drawTitle() {
         if (arm) ctx.drawImage(arm, 2 * 34, 0, 34, 34, 226 + textWidth(rows[i].value()) + 12, y - 13, 34, 34);
       }
       drawButton(400, y - 2, 26, ">", sel); addMenuBtn(400, y - 2, 26, rows[i].inc);
-      y += 26;
+      y += 22;
     }
     drawText("Walk code: " + WALK_MODES[settings.walkMode].hint, 46, y + 4, "#aaa");
     drawText("Animation: " + ANIM_MODES[settings.animMode].hint, 46, y + 18, "#aaa");
@@ -1177,7 +1185,7 @@ function handleMenuClick(mx, my) {
   if (state.started) return;
   if (state.menu === "title") { startGame(); return; }
   for (const b of menuButtons) {
-    if (mx >= b.x && mx <= b.x + b.w && my >= b.y - 4 && my <= b.y + b.h + 4) {
+    if (mx >= b.x && mx <= b.x + b.w && my >= b.y && my <= b.y + b.h) {
       playSound(cursorEl, 0.5); b.action(); return;
     }
   }
